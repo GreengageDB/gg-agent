@@ -45,7 +45,35 @@ could not verify without a running cluster.
 Claude cannot submit a formal GitHub review or approve a pull request. Do not imply
 otherwise in the summary; say "review comments posted", not "approved".
 
-**Locally**, print the findings in severity order.
+**Locally**, print the findings in severity order. If the user asked you to post them to
+the pull request, submit **one review** rather than a scatter of loose comments — it
+groups the inline comments under a single summary and sends one notification:
+
+```bash
+cat > /tmp/gg-review.json <<'JSON'
+{
+  "commit_id": "<head sha from `gh pr view <n> --json headRefOid`>",
+  "event": "COMMENT",
+  "body": "<summary: what was reviewed, counts by severity, what needs a cluster to settle>",
+  "comments": [
+    { "path": "src/backend/...", "line": 123, "side": "RIGHT", "body": "<the finding>" }
+  ]
+}
+JSON
+gh api repos/<owner>/<repo>/pulls/<n>/reviews --input /tmp/gg-review.json
+```
+
+Rules that will otherwise cost you a failed call or a misleading review:
+
+- `line` must be a line the diff actually touches, numbered in the **head** commit. A line
+  outside the diff is rejected. Use `side: "LEFT"` only to comment on a removed line.
+- Use `event: "COMMENT"`. `APPROVE` and `REQUEST_CHANGES` are refused on your own pull
+  request, and approving is not the agent's call to make regardless.
+- The review is authored by whoever owns the `gh` token — a human account, not a bot. **Say
+  so in the summary**, e.g. a closing line naming the command and the subagent, so nobody
+  mistakes generated findings for a colleague's hand-written review.
+- Post once. Re-running the command should not stack duplicate reviews on the same head
+  commit; check `gh pr view <n> --json reviews` first.
 
 Either way, for each finding give: the file and line, the mechanism by which it breaks on a
 cluster, and a concrete scenario that triggers it — which segment, which role, which
