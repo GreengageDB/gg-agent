@@ -84,6 +84,12 @@ cluster, and a concrete scenario that triggers it — which segment, which role,
 sequence. Separate confirmed defects from things that need a cluster to settle, and label
 which is which.
 
+**Keep each comment short.** A reviewer reads it next to the line it is attached to, so it
+needs the defect, the mechanism in a sentence or two, and the fix — not a derivation. Aim
+for under ~600 characters per inline comment: lead with the problem in bold, then why it
+breaks, then what to change. Move anything longer into the summary, or leave it out. A
+comment that has to be scrolled past is a comment that gets skimmed.
+
 If nothing is wrong, say so plainly and list what you checked.
 
 See also: [greengage-internals](../skills/greengage-internals/SKILL.md) ·
