@@ -13,9 +13,22 @@ establishes the diff, drives that agent, and decides where the findings go.
 
 Never review a description of a change. Get the actual patch:
 
-- **A pull request** — `gh pr diff <number>`. Prefer this over local git: it needs no
-  history, which matters because a full-history checkout of this repository is hundreds of
-  megabytes and CI checks it out shallow.
+- **A pull request** — `gh pr diff <number> --repo <owner>/<repo>`. Prefer this over local
+  git: it needs no history, which matters because a full-history checkout of this
+  repository is hundreds of megabytes and CI checks it out shallow.
+
+  **Resolve which repository first, and never assume the current one.** Accept any of
+  `https://github.com/<owner>/<repo>/pull/<n>`, `<owner>/<repo>#<n>`, `<owner>/<repo> <n>`,
+  or a bare `<n>`. Only the bare form means the current directory's repository — for
+  everything else pass `--repo <owner>/<repo>` to *every* `gh` call, including the one that
+  posts. Reviewing a fork and posting to upstream, or the reverse, is the easy mistake here.
+  Echo the resolved `<owner>/<repo>#<n>` before doing any work so a wrong target is caught
+  immediately.
+
+  You do not need a local checkout at all if you only need the diff. You do need one to
+  read surrounding code, which is usually what separates a real finding from a guess — so
+  when reviewing a repository you have no checkout of, say that the review is diff-only and
+  what that limits.
 - **A branch** — `git diff $(git merge-base HEAD <base>)...HEAD`, where `<base>` is `7.x`
   or `6.x`. Not `main`, which is a stale mirror of the 6.x line.
 - **Nothing given** — the uncommitted working diff, `git diff` plus `git diff --cached`.
@@ -63,6 +76,9 @@ JSON
 gh api repos/<owner>/<repo>/pulls/<n>/reviews --input /tmp/gg-review.json
 ```
 
+`<owner>/<repo>` here is the repository resolved in step 1 — the one the pull request
+lives in, which is not necessarily the one you are standing in.
+
 Rules that will otherwise cost you a failed call or a misleading review:
 
 - `line` must be a line the diff actually touches, numbered in the **head** commit. A line
@@ -91,6 +107,37 @@ breaks, then what to change. Move anything longer into the summary, or leave it 
 comment that has to be scrolled past is a comment that gets skimmed.
 
 If nothing is wrong, say so plainly and list what you checked.
+
+## Running this from a terminal
+
+The command works headless, with no interactive session. Install the plugin once:
+
+```bash
+claude plugin marketplace add https://github.com/GreengageDB/gg-agent.git
+claude plugin install greengage@greengage-agent-skills
+```
+
+Then review any pull request you can read, in any repository:
+
+```bash
+claude -p "/greengage:gg-review GreengageDB/greengage#123 and post the review" \
+  --permission-mode dontAsk \
+  --max-turns 30
+```
+
+- **`--permission-mode dontAsk`** matters: `-p` starts in `manual`, where every `gh` call
+  waits for an approval nobody is there to give. The alternative is an explicit
+  `--allowedTools "Bash(gh pr diff:*) Bash(gh api:*) Read Grep Glob"`.
+- **Never pass `--bare`** — it skips plugin sync and `CLAUDE.md` discovery, which removes
+  the knowledge this command exists to apply.
+- The review is authored by whoever `gh auth status` reports. Check that before posting to
+  a repository other people watch.
+- Cost controls: `--max-turns`, `--max-budget-usd`, `--model`.
+- Say explicitly in the prompt whether to post. Left ambiguous, a headless run should print
+  and not post — posting to someone else's repository is not a default worth guessing at.
+
+For a repository you have no checkout of, `cd` into one first if you want the reviewer to
+read surrounding code; otherwise the review is diff-only and should say so.
 
 See also: [greengage-internals](../skills/greengage-internals/SKILL.md) ·
 [greengage-testing](../skills/greengage-testing/SKILL.md) ·
