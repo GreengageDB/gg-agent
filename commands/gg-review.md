@@ -19,11 +19,22 @@ Never review a description of a change. Get the actual patch:
 
   **Resolve which repository first, and never assume the current one.** Accept any of
   `https://github.com/<owner>/<repo>/pull/<n>`, `<owner>/<repo>#<n>`, `<owner>/<repo> <n>`,
-  or a bare `<n>`. Only the bare form means the current directory's repository — for
-  everything else pass `--repo <owner>/<repo>` to *every* `gh` call, including the one that
-  posts. Reviewing a fork and posting to upstream, or the reverse, is the easy mistake here.
-  Echo the resolved `<owner>/<repo>#<n>` before doing any work so a wrong target is caught
-  immediately.
+  or a bare `<n>`. For anything but the bare form, pass `--repo <owner>/<repo>` to *every*
+  `gh` call, including the one that posts.
+
+  **A bare number is dangerous in a checkout that has more than one remote.** `gh` silently
+  resolves it against its default repository, which is the upstream `origin`, not the fork
+  you were thinking of — and the same number is a completely different pull request in each.
+  Before trusting a bare number:
+
+  ```bash
+  git remote -v                 # more than one? the number is ambiguous
+  gh repo set-default --view    # empty means gh is guessing
+  ```
+
+  If there is any ambiguity, resolve it to an explicit `<owner>/<repo>` and use `--repo`.
+  Always echo the resolved `<owner>/<repo>#<n>` **and the PR title** before doing any work —
+  the title is what makes a wrong target obvious at a glance.
 
   You do not need a local checkout at all if you only need the diff. You do need one to
   read surrounding code, which is usually what separates a real finding from a guess — so
@@ -136,8 +147,28 @@ claude -p "/greengage:gg-review GreengageDB/greengage#123 and post the review" \
 - Say explicitly in the prompt whether to post. Left ambiguous, a headless run should print
   and not post — posting to someone else's repository is not a default worth guessing at.
 
-For a repository you have no checkout of, `cd` into one first if you want the reviewer to
-read surrounding code; otherwise the review is diff-only and should say so.
+### Running inside a Greengage checkout
+
+Worth doing — a checkout is what lets the reviewer grep the whole tree, which is where the
+findings the diff cannot show come from ("this field is written but nothing ever sets it").
+Two things to get right:
+
+**The checkout should match the pull request.** Standing on an unrelated branch means the
+surrounding code you read is not the code the PR modifies. Do not `gh pr checkout` over
+work in progress; add a worktree at the PR's head instead, and remove it afterwards:
+
+```bash
+gh pr view <n> --repo <owner>/<repo> --json headRefOid -q .headRefOid   # -> <sha>
+git fetch <remote> <sha> && git worktree add /tmp/review-<n> <sha>
+cd /tmp/review-<n>       # review from here
+# when done:  git worktree remove /tmp/review-<n>
+```
+
+If you review from a branch that does not match, say so in the summary and treat anything
+that depends on surrounding code as unconfirmed.
+
+**Name the repository explicitly**, per the ambiguity warning above — a Greengage checkout
+usually has both `origin` (upstream) and a fork remote.
 
 See also: [greengage-internals](../skills/greengage-internals/SKILL.md) ·
 [greengage-testing](../skills/greengage-testing/SKILL.md) ·
