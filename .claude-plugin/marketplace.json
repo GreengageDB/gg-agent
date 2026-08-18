@@ -1,0 +1,38 @@
+{
+  "name": "greengage-agent-skills",
+  "owner": {
+    "name": "GreengageDB",
+    "url": "https://greengagedb.org/"
+  },
+  "metadata": {
+    "description": "Agent skills for working with Greengage DB - the MPP analytical database built on PostgreSQL",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "greengage",
+      "source": "./",
+      "description": "Agent skills for Greengage DB, the MPP analytical database built on PostgreSQL - schema and distribution design, MPP query tuning, data loading, cluster operations, backup, workload management, plus backend build/test/debug/CI workflows for contributors.",
+      "version": "0.1.0",
+      "author": {
+        "name": "GreengageDB",
+        "url": "https://greengagedb.org/"
+      },
+      "homepage": "https://greengagedb.org/",
+      "repository": "https://github.com/GreengageDB/gg-agent",
+      "license": "Apache-2.0",
+      "keywords": [
+        "greengage",
+        "greenplum",
+        "postgresql",
+        "mpp",
+        "database",
+        "data-warehouse",
+        "olap",
+        "query-optimization",
+        "schema-design"
+      ],
+      "category": "database"
+    }
+  ]
+}

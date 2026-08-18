@@ -1,0 +1,27 @@
+name: Validate skills
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate skill structure, frontmatter and manifests
+        run: python3 tools/validate_skills.py
+
+      - name: Check documentation links resolve
+        run: python3 tools/check_doc_links.py
+        continue-on-error: true
