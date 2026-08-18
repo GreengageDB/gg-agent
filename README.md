@@ -111,16 +111,22 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           plugin_marketplaces: "https://github.com/GreengageDB/gg-agent.git"
           plugins: "greengage@greengage-agent-skills"
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Read,Grep,Glob,Agent,Skill"
 ```
 
-Requirements: the [Claude GitHub App](https://docs.claude.com/en/docs/claude-code/github-actions)
-installed on the repository, and an `ANTHROPIC_API_KEY` secret. Then comment
+The only secret required is `ANTHROPIC_API_KEY`. Then comment
 `@claude review this for MPP correctness` — or name the reviewer explicitly with
 `@claude @agent-greengage:greengage-mpp-reviewer review this`.
+
+Passing `github_token` is what avoids needing the Claude GitHub App installed on the
+repository: the action returns that token immediately instead of exchanging an OIDC token
+for an app token. The cost is that comments are authored by `github-actions[bot]` rather
+than `claude[bot]`, and `use_sticky_comment` stops working. Inline comments are unaffected,
+but they do require `pull-requests: write`.
 
 Two things worth knowing. The `plugin_marketplaces` URL **must end in `.git`**; the action
 rejects `owner/repo` shorthand and SSH URLs. And the inline-comment MCP server only starts
