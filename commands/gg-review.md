@@ -69,9 +69,13 @@ Rules that will otherwise cost you a failed call or a misleading review:
   outside the diff is rejected. Use `side: "LEFT"` only to comment on a removed line.
 - Use `event: "COMMENT"`. `APPROVE` and `REQUEST_CHANGES` are refused on your own pull
   request, and approving is not the agent's call to make regardless.
-- The review is authored by whoever owns the `gh` token — a human account, not a bot. **Say
-  so in the summary**, e.g. a closing line naming the command and the subagent, so nobody
-  mistakes generated findings for a colleague's hand-written review.
+- The review is authored by whoever owns the `gh` token — a human account, not a bot, so
+  the findings must be marked as generated. End the summary with exactly:
+
+  ```
+  ---
+  _Generated with greengage plugin_
+  ```
 - Post once. Re-running the command should not stack duplicate reviews on the same head
   commit; check `gh pr view <n> --json reviews` first.
 
