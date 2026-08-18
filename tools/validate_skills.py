@@ -229,6 +229,14 @@ def validate_manifests(skill_dirs: list[Path]) -> None:
         err(".claude-plugin", f"invalid JSON: {exc}")
         return
 
+    # `commands` and `agents` must be arrays when present. A bare string parses as
+    # JSON but is rejected by `claude plugin install` with "agents: Invalid input",
+    # and the failure only shows up at install time. Both default to ./commands and
+    # ./agents, so the usual fix is to omit them entirely.
+    for key in ("commands", "agents", "skills"):
+        if key in plugin and not isinstance(plugin[key], list):
+            err("plugin.json", f"{key!r} must be an array, not {type(plugin[key]).__name__}")
+
     listed = {s.rstrip("/").removeprefix("./") for s in plugin.get("skills", [])}
     actual = {f"skills/{d.name}" for d in skill_dirs}
 

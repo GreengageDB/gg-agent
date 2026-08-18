@@ -36,7 +36,5 @@
     "./skills/greengage-debug/",
     "./skills/greengage-ci/",
     "./skills/greengage-contribute/"
-  ],
-  "commands": "./commands",
-  "agents": "./agents"
+  ]
 }
