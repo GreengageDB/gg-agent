@@ -74,7 +74,7 @@ Rules that will otherwise cost you a failed call or a misleading review:
 
   ```
   ---
-  _Generated with greengage plugin_
+  _Generated with [greengage plugin](https://github.com/GreengageDB/gg-agent)_
   ```
 - Post once. Re-running the command should not stack duplicate reviews on the same head
   commit; check `gh pr view <n> --json reviews` first.
