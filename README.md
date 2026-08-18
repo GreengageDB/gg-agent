@@ -66,6 +66,7 @@ Written for **Greengage 7.x** (PostgreSQL 12.22, *coordinator* terminology), wit
 
 | Command | Does |
 |---|---|
+| `/gg-review` | Review a change for MPP correctness and report findings on the diff |
 | `/gg-cluster-up` | Bring up a demo cluster, or attach to and verify an existing one |
 | `/gg-health` | Segment configuration, mirror sync, FTS state, disk and skew in one report |
 | `/gg-explain` | Run a query under both optimizers and interpret the plans, motions and skew |
@@ -79,6 +80,57 @@ Written for **Greengage 7.x** (PostgreSQL 12.22, *coordinator* terminology), wit
 |---|---|
 | `greengage-mpp-reviewer` | Reviews a diff for MPP correctness — dispatch desync, motion and locus, append-optimized aux relations, catalog changes, utility-mode assumptions |
 | `greengage-perf-analyst` | End-to-end slow-query analysis: plan, skew, statistics, storage layout, distribution key |
+
+## Use it on GitHub pull requests
+
+The plugin can review pull requests in place. Add a workflow that installs it from this
+marketplace, and Claude answers when someone writes `@claude` on a PR:
+
+```yaml
+# .github/workflows/claude.yml
+name: Claude
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  claude:
+    if: contains(github.event.comment.body, '@claude')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          plugin_marketplaces: "https://github.com/GreengageDB/gg-agent.git"
+          plugins: "greengage@greengage-agent-skills"
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Read,Grep,Glob,Agent,Skill"
+```
+
+Requirements: the [Claude GitHub App](https://docs.claude.com/en/docs/claude-code/github-actions)
+installed on the repository, and an `ANTHROPIC_API_KEY` secret. Then comment
+`@claude review this for MPP correctness` — or name the reviewer explicitly with
+`@claude @agent-greengage:greengage-mpp-reviewer review this`.
+
+Two things worth knowing. The `plugin_marketplaces` URL **must end in `.git`**; the action
+rejects `owner/repo` shorthand and SSH URLs. And the inline-comment MCP server only starts
+when `claude_args` names `mcp__github_inline_comment__create_inline_comment`, so keep that
+entry even though the review flow implies it. Claude posts inline comments and a summary —
+it cannot submit a formal GitHub review or approve a PR.
+
+A repo-level `CLAUDE.md` telling Claude to delegate to
+`@agent-greengage:greengage-mpp-reviewer` makes a bare `@claude review this` route
+correctly without anyone remembering the agent's name.
 
 ## Scope
 
