@@ -112,6 +112,16 @@ is the 7.x-only spelling.
    note the 7 delta in prose when no `/7/` page exists. Verify a URL resolves before
    citing it.
 
+**One exception, and only one.** `greengage-pg-merge` and the `greengage-pg-merger`
+subagent document the PostgreSQL major-version bump, which happens on the campaign branches
+in `GreengageDB/greengage_sync` and cannot be grounded in `GreengageDB/greengage` — the
+whole subject is a tree that does not exist there. They are grounded on named
+`greengage_sync` branches instead (`8.x`, `next`, `claude-merge-*`), and every version
+claim in them is verifiable with `git show <branch>:configure.ac`. Rules 2 and 3 still
+apply in full: no facts from other Greenplum forks, and no claim about `7.x` that was
+actually observed on a campaign branch. If you add a third file that needs this exception,
+that is a signal to reconsider the boundary, not to widen it quietly.
+
 ## Rule files (`rules/*.md`)
 
 Used by the rule-library skills (`greengage-schema-design`,
