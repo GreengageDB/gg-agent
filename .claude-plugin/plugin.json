@@ -35,6 +35,7 @@
     "./skills/greengage-internals/",
     "./skills/greengage-debug/",
     "./skills/greengage-ci/",
-    "./skills/greengage-contribute/"
+    "./skills/greengage-contribute/",
+    "./skills/greengage-pg-merge/"
   ]
 }

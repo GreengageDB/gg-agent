@@ -61,6 +61,7 @@ Written for **Greengage 7.x** (PostgreSQL 12.22, *coordinator* terminology), wit
 | [greengage-debug](skills/greengage-debug/SKILL.md) | A crash, assertion failure, hang, or wrong result — logs, reproduction, fault injection, gdb |
 | [greengage-ci](skills/greengage-ci/SKILL.md) | A CI run is red — fetching artifacts and classifying each failure as cosmetic, real, or flaky |
 | [greengage-contribute](skills/greengage-contribute/SKILL.md) | Preparing a pull request — which branch to target, the CLA, formatting rules, and the review process |
+| [greengage-pg-merge](skills/greengage-pg-merge/SKILL.md) | Merging an upstream PostgreSQL major version into the fork — conflict clustering, semantic re-grafting, the phased bring-up, and the traps that recur every bump |
 
 ## Commands
 
@@ -73,6 +74,7 @@ Written for **Greengage 7.x** (PostgreSQL 12.22, *coordinator* terminology), wit
 | `/gg-test` | Run a regression test or suite correctly for the detected version |
 | `/gg-triage-ci` | Fetch a failed CI run's artifacts and classify every failure |
 | `/gg-skew` | Data and computational skew report for a table or a whole database |
+| `/gg-pg-bump` | Start or continue a PostgreSQL major-version bump on the campaign line |
 
 ## Subagents
 
@@ -80,6 +82,7 @@ Written for **Greengage 7.x** (PostgreSQL 12.22, *coordinator* terminology), wit
 |---|---|
 | `greengage-mpp-reviewer` | Reviews a diff for MPP correctness — dispatch desync, motion and locus, append-optimized aux relations, catalog changes, utility-mode assumptions |
 | `greengage-perf-analyst` | End-to-end slow-query analysis: plan, skew, statistics, storage layout, distribution key |
+| `greengage-pg-merger` | Runs a PostgreSQL major-version bump: conflict inventory, semantic resolution, and the compile → unit-test → initdb → regress → isolation2 → CI ladder |
 
 ## Use it on GitHub pull requests
 
@@ -139,10 +142,19 @@ correctly without anyone remembering the agent's name.
 
 ## Scope
 
-These skills cover working with Greengage as it ships. Merging a new upstream PostgreSQL
-major version into the fork is a different discipline with its own playbook — conflict
-clustering, semantic re-grafting, phased bring-up — and lives with the campaign branches in
-[`GreengageDB/greengage_sync`](https://github.com/GreengageDB/greengage_sync), not here.
+Everything above covers Greengage as it ships, on the `7.x` and `6.x` lines. One thing here
+does not: merging a new upstream PostgreSQL major version into the fork is a separate
+discipline — conflict clustering, semantic re-grafting, a phased bring-up — carried out on
+the campaign branches in
+[`GreengageDB/greengage_sync`](https://github.com/GreengageDB/greengage_sync), whose `8.x`
+line is already past both shipping lines.
+
+That work is covered by [greengage-pg-merge](skills/greengage-pg-merge/SKILL.md) and the
+`greengage-pg-merger` subagent, and only by those two. They say so at the top, they cite
+`greengage_sync` branches by name, and they are the one deliberate exception to the
+grounding rule in [AGENTS.md](AGENTS.md) that facts must come from `GreengageDB/greengage`.
+Anything else you read here is about the shipping lines; do not carry a command from a
+campaign branch into a `7.x` answer without checking that the file still has that name.
 
 ## Contributing
 
