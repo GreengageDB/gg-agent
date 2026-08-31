@@ -26,8 +26,11 @@ from pathlib import Path
 EN_MODULES = Path("en/modules")
 RU_MODULES = Path("ru/modules")
 
-# Every page must declare these (syntax-grammar.md:5655, :5937).
-REQUIRED_PAGE_ATTRS = (":page-productlogo:", ":page-author:", ":page-htmltitle:", ":description:")
+# Every page must declare these (syntax-grammar.md:5654).
+# `:page-productlogo:` is in the guide but deliberately not here: docs-greengagedb declares
+# it on 0 of its 67 pages, so requiring it would flag the whole repository rather than a
+# defect. Add it back for a repository that does use it.
+REQUIRED_PAGE_ATTRS = (":page-author:", ":page-htmltitle:", ":description:")
 
 # Only two block-image widths are permitted (syntax-grammar.md:2385-2402).
 ALLOWED_IMAGE_WIDTHS = ("724", "362")
@@ -67,12 +70,20 @@ IMAGE_RE = re.compile(r"^image::([^\[]+)\[([^\]]*)\]")
 TYPOGRAPHY = {"“": "\"", "”": "\"", "‘": "'", "’": "'"}
 TRADEMARKS = {"©": "(c)", "®": "(r)", "™": "(tm)"}
 ABBREVS = re.compile(r"(?<![\w-])(info|docs|app)(?![\w-])", re.IGNORECASE)
+URL_CONTEXT_RE = re.compile(
+    r"(?:https?://|\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/)[^\s\[\]]*"
+)
 BUTTON_RE = re.compile(r"\*_[^_]+_\*\s+button\b", re.IGNORECASE)
 LIST_ITEM_RE = re.compile(r"^([*.]+|-)\s+\S")
 
 # Delimiters that open a verbatim or non-prose block. `|===` is deliberately absent:
 # table content is prose and several rules need to see it.
 VERBATIM_DELIMS = ("----", "....", "////", "++++")
+
+# Delimiters that can be *attached to a list item* with a `+` continuation. A list run
+# survives them: a numbered procedure whose steps each carry a [tabs] or example block is
+# one list, not a run of single-item lists.
+ATTACHABLE_DELIMS = ("====", "=====", "======", "****", "--", "____", "|===")
 
 
 class Finding:
@@ -121,6 +132,8 @@ def scan(path: Path, rel: str, enabled: set[str], is_page: bool) -> list[Finding
     prev_line = ""
     list_run: list[int] = []
     list_marker = ""
+    attached = False              # inside a `+` continuation
+    attached_delim: str | None = None   # the delimiter that continuation opened
 
     for n, raw in enumerate(raw_lines, 1):
         stripped = raw.strip()
@@ -203,7 +216,8 @@ def scan(path: Path, rel: str, enabled: set[str], is_page: bool) -> list[Finding
         if bm:
             add(n, bm.start() + 1, "SG-BUTTON", "drop the word 'button' after the UI element name")
         if not ATTR_ENTRY_RE.match(stripped) and not stripped.startswith("image:"):
-            am = ABBREVS.search(line)
+            # Blank URLs first: "docs" in iceberg.apache.org/docs/latest/ is a path segment.
+            am = ABBREVS.search(URL_CONTEXT_RE.sub(lambda m: " " * len(m.group(0)), line))
             if am:
                 full = {"info": "information", "docs": "documentation", "app": "application"}
                 add(n, am.start() + 1, "SG-ABBREV",
@@ -216,6 +230,16 @@ def scan(path: Path, rel: str, enabled: set[str], is_page: bool) -> list[Finding
                 add(n, 1, "SG-TABLE-EMPTY", "empty table cell; enter -- if there is no value")
 
         # --- lists -----------------------------------------------------------
+        # A list item can carry attached blocks through `+` continuations, so the run must
+        # survive everything between two items that is plainly part of the first one.
+        if attached and stripped in ATTACHABLE_DELIMS:
+            if attached_delim is None:
+                attached_delim = stripped
+            elif stripped == attached_delim:
+                attached_delim, attached = None, False
+            prev_line = raw
+            continue
+
         lm2 = LIST_ITEM_RE.match(stripped)
         if lm2:
             marker = lm2.group(1)
@@ -223,8 +247,15 @@ def scan(path: Path, rel: str, enabled: set[str], is_page: bool) -> list[Finding
                 flush_single_item_list(list_run, list_marker, add)
                 list_run, list_marker = [], marker
             list_run.append(n)
-        elif not stripped or stripped == "+":
+            attached, attached_delim = False, None
+        elif not stripped:
             pass
+        elif stripped == "+":
+            attached = True
+        elif attached or attached_delim is not None:
+            pass                      # attached content: still the same list item
+        elif BLOCK_ATTR_RE.match(stripped) or BLOCK_TITLE_RE.match(stripped):
+            pass                      # a block attribute or title belongs to what follows
         else:
             flush_single_item_list(list_run, list_marker, add)
             list_run, list_marker = [], ""

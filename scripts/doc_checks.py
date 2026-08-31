@@ -44,8 +44,13 @@ STRUCTURE_RULES = [
 ]
 GUIDELINE_RULES = [
     "SG-LINK-NEWTAB", "SG-LINK-NOFOLLOW", "SG-IMG-ALT", "SG-IMG-WIDTH",
-    "SG-TYPOGRAPHY", "SG-TRADEMARK", "SG-COLON-BEFORE", "SG-TABLE-EMPTY",
-    "SG-LIST-SINGLE", "SG-BUTTON", "SG-ABBREV",
+    "SG-TYPOGRAPHY", "SG-TRADEMARK",
+]
+# adoc_style_check treats an explicit --rule as "the author asked for this one by name" and
+# runs it whether or not it is beta. So the beta ids live here and are only requested when
+# --beta is passed - otherwise naming them would silently defeat the default.
+GUIDELINE_RULES_BETA = [
+    "SG-COLON-BEFORE", "SG-TABLE-EMPTY", "SG-LIST-SINGLE", "SG-BUTTON", "SG-ABBREV",
 ]
 
 JUDGEMENT_LAYERS = {
@@ -131,7 +136,14 @@ def build_layers(args, docs_tool: Path | None, repo: Path) -> list[tuple[int, st
 
     layers = [
         (1, "AsciiDoc and markup", [
-            Step("docs_tool check chars markup", dt + ["check", "chars", "markup"] + pages,
+            # The delimiter rule is its own step because it is the only one that gates:
+            # a stray dash or an odd backtick says nothing about the include chain, and
+            # bundling them would let an unrelated finding suppress reference resolution.
+            Step("docs_tool check chars", dt + ["check", "chars"] + pages, needs_docs_tool=True),
+            Step("docs_tool check markup --backticks",
+                 dt + ["check", "markup", "--backticks"] + pages, needs_docs_tool=True),
+            Step("docs_tool check markup --delimiters",
+                 dt + ["check", "markup", "--delimiters"] + pages,
                  needs_docs_tool=True, opens="delimiters"),
             Step("adoc_style_check (structure)", style + rules(STRUCTURE_RULES)),
         ]),
@@ -155,7 +167,8 @@ def build_layers(args, docs_tool: Path | None, repo: Path) -> list[tuple[int, st
         ]),
         (7, "Guideline compliance", [
             Step("docs_tool check style", dt + ["check", "style"] + pages, needs_docs_tool=True),
-            Step("adoc_style_check (house rules)", style + rules(GUIDELINE_RULES)),
+            Step("adoc_style_check (house rules)",
+                 style + rules(GUIDELINE_RULES + (GUIDELINE_RULES_BETA if args.beta else []))),
         ]),
     ]
     return [layer for layer in layers if layer[0] in args.layer_set]
