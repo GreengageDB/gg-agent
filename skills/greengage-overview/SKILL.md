@@ -142,6 +142,18 @@ Only rows that change something you would type. Full inventory in
 | Understand the GitHub Actions matrix, reproduce a CI failure in Docker | [greengage-ci](../greengage-ci/SKILL.md) |
 | Open a PR: CLA, review rules, branch naming, where tests must go | [greengage-contribute](../greengage-contribute/SKILL.md) |
 
+### Working on the documentation
+
+The documentation lives in its own Antora repositories, not in this tree, and is published
+in English and Russian from the same source.
+
+| If you are trying to … | Use |
+|---|---|
+| Review a docs merge request or page set — the layer pipeline, `docs_tool`, reporting | [greengage-docs-review](../greengage-docs-review/SKILL.md) |
+| Apply the Arenadata style guide: misprints, grammar, headings, terminology | [greengage-docs-style](../greengage-docs-style/SKILL.md) |
+| Keep the English and Russian pages in step, or repair a page that drifted | [greengage-docs-i18n](../greengage-docs-i18n/SKILL.md) |
+| Check what a page asserts against the source at a tag — GUCs, flags, catalogs | [greengage-docs-verify](../greengage-docs-verify/SKILL.md) |
+
 ## Cluster anatomy: `gp_segment_configuration` is the topology table
 
 Not `ps`, not the config files. One shared catalog describes the whole cluster on both

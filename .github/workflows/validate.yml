@@ -22,6 +22,9 @@ jobs:
       - name: Validate skill structure, frontmatter and manifests
         run: python3 tools/validate_skills.py
 
+      - name: Validate the runtime scripts
+        run: python3 tools/check_scripts.py
+
       - name: Check documentation links resolve
         run: python3 tools/check_doc_links.py
         continue-on-error: true
