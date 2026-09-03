@@ -1,6 +1,6 @@
 ---
 name: greengage-pg-merge
-description: Merge an upstream PostgreSQL major version into Greengage and bring the fork back up - pinned one-major-per-step targets on greengage_sync, semantic conflict resolution against reference branches, typing the AU/DU/UU inventory, cluster and batch-sweep resolution, the compile - unittest - initdb - regress - isolation2 - CI phase ladder, per-area verifiers beyond conflict markers, merge-artifact garbage and clean-merge traps. Use when starting or continuing a PG major-version bump, when `git diff --diff-filter=U` lists hundreds of files, or when a post-merge failure looks like a dropped re-graft.
+description: Merge an upstream PostgreSQL major version into Greengage and bring the fork back up - pinned one-major-per-step targets on greengage_sync, semantic conflict resolution against reference branches, minimal-diff scope, post-target lookahead for reverts and pre-release fixes, behaviour decisions as separate commits, typing the AU/DU/UU inventory, cluster and batch-sweep resolution, the compile - unittest - initdb - regress - isolation2 - CI phase ladder, per-area verifiers, clean-merge traps. Use when starting or continuing a PG major-version bump, when `git diff --diff-filter=U` lists hundreds of files, or when a post-merge failure looks like a dropped re-graft.
 license: Apache-2.0
 metadata:
   author: GreengageDB
@@ -67,10 +67,18 @@ Calibrate before promising anything. A single-major step has measured at roughly
 **2400 commits / 3900 upstream files / 600–800 conflicted files**, and the merge itself is
 the smaller half: the bring-up that follows produced several hundred further fix commits.
 
-**Do not commit the merge until every conflict is resolved and the build plus core regress
-are green.** The merge state survives on disk, staged resolutions survive in the index, and
-a single mis-resolved file is recoverable with `git checkout -m -- <file>`. `git merge
---abort` throws all of it away — reach for it only deliberately.
+Two ways to carry the merge, and the choice is about who reviews it:
+
+| Workflow | When | Rule |
+|---|---|---|
+| **One merge commit** | A solo campaign step nobody reviews file by file | Do not commit until every conflict is resolved and the build plus core regress are green — the commit is what makes the campaign bisectable |
+| **Committed markers, then one commit per file or topic** | A sync the team reviews (the `greengage_sync` `sync-14x-b*` convention) | Commit the conflicted merge as-is, then resolve each file in its own `squash! Resolve conflicts in <file>` commit whose message names the upstream commit(s) and the Greengage commit(s) that collided and justifies every decision — template in [reference/merge-conventions.md](reference/merge-conventions.md) |
+
+Either way the merge state survives on disk, staged resolutions survive in the index, and a
+single mis-resolved file is recoverable with `git checkout -m -- <file>`. `git merge
+--abort` throws all of it away — reach for it only deliberately. What is never acceptable
+is a thousand-file merge commit that also carries bring-up fixes, behaviour decisions and
+answer-file regenerations: nobody can review it, so nobody does.
 
 ## Never resolve by taking ours or theirs
 
@@ -96,6 +104,7 @@ When the merge dropped a re-graft you need back, diff against a **reference bran
 | `greengage` `7.x` | Last shipped Greengage major (PostgreSQL 12.22), when 8.x itself is suspect |
 | The previous `claude-merge-N` | How the *last* bump resolved this same file |
 | `postgres/postgres` at the previous target | Pure upstream — what was Greengage's in the first place |
+| The `greengage_sync` team's own PRs (`sync-14x-b*`) and the `claude-merge-*` fix logs | How the same conflict or symptom was settled before — `git log --grep=<symptom>` / `git log -S<identifier>` on those branches, and PR descriptions that name the colliding commits. The team is the authority on conventions |
 
 `greengage` `6.x` is PostgreSQL 9.4.26, far too old to re-graft from; use it only to date a
 Greengage feature. And a previous branch's resolution can itself be wrong: verify before
@@ -118,6 +127,67 @@ members, `#include`s.
 The one place wholesale-ours is correct: a heavily forked, self-contained Greengage
 subsystem where every upstream change is unwanted. Take `:2:` entirely and record why,
 rather than building a hybrid nobody can reason about.
+
+## Sync what upstream changed and nothing else
+
+A resolution is the smallest edit that lets the upstream change and the Greengage behaviour
+coexist. Everything else is a separate change with its own review:
+
+| Inside a resolution, do not | Do instead |
+|---|---|
+| Re-indent, re-tab or reword text either side already had (`guc.c` entries, a `postgres.h` comment, error detail strings) | Leave it; a reviewer diffing the hunk must see only the merge |
+| Remove pre-existing duplicates or dead code you notice (`pgstat.c` double include, `aggregate_dummy()`) | Note it in the report; clean it in a follow-up commit that says so |
+| Re-order `case`/`default:` blocks or re-derive a branch ladder upstream only split (`canAcceptConnections`) | Insert the new upstream branch where the old one was; keep Greengage's precedence |
+| Take upstream's declaration over a deliberate Greengage type or arity (`forbidden_in_wal_sender(int)`, the 3-argument `try_relation_open`) | `git log -S` the Greengage side first; a type difference is a port until proven incidental |
+| Keep a Greengage name upstream has renamed, when an earlier merge simply missed the rename (`lazy_vacuum_rel_heap`) | Adopt the upstream name and layout (`heap_vacuum_rel`, `SUBDIRS` one per line, upstream's file split) — it shrinks the next conflict |
+| Re-graft Greengage text into `doc/` | Take upstream for every `doc/` conflict; the Greengage documentation lives in its own repository |
+
+New comments take the `GGDB:` prefix — the tree carries both spellings, new code should not
+add to the older one. A guard for a new MPP invariant whose failure would corrupt data is
+`elog(ERROR)`, not `Assert`: a release build must refuse, not proceed. Worked examples of
+each row: [reference/merge-conventions.md](reference/merge-conventions.md).
+
+## Look past the target before you resolve a cluster
+
+The pinned target is a snapshot of upstream development, usually the feature freeze.
+Upstream keeps working after it, and two kinds of later commit change what the right
+resolution is today:
+
+```bash
+# features in the batch that upstream reverted before the release
+git log --oneline <target>..REL_<N>_0 --grep=Revert -- <files of the cluster>
+# crash and corruption fixes upstream applied, before the release, to code the merge brought in
+git log --oneline <target>..REL_<N>_0 -- <every file the merge touched>
+```
+
+| Finding | Do |
+|---|---|
+| A feature in the batch is **reverted** before the next release tag | Back it out of the merge (`git diff <first>^ <last> -- src \| git apply -R --3way`, then hand-resolve) instead of re-grafting Greengage code onto it. Mark kept Greengage code inside the region with `TODO_REVERT_<revert-hash>` so the next bump keeps ours where git would silently merge duplicates |
+| A **fix** lands before the release, in code the merge just brought in | Backport it as its own commit, upstream hash in the subject, minimal shape; keep the list for the next bump to reconcile |
+| A corruption fix lands in a later **minor** (release notes N.1–N.x) for code you merged | Same, and say so in the report |
+
+PG14 b16 is the worked example. The XLogReader state machine, decode buffer and recovery
+prefetch (`323cbe7`, `f003d9f`, `1d25757`) were reverted 215 commits after the freeze
+(`c2dc19342e0`); porting Greengage's WAL code onto them cost about twenty files and a
+hundred novel lines that the next merge throws away. In the same window upstream fixed an
+autovacuum worker crash (`0e69f705cc1`), a libpq SNI NULL dereference (`37e1cce4ddf`,
+`ffff00a3556`) and, in 14.2, HOT-chain corruption during pruning (`dad1539aec2`); the line
+that merged the freeze snapshot without this sweep carried all three into CI. The decision
+table with every b16 case: [reference/merge-conventions.md](reference/merge-conventions.md).
+
+## A behaviour decision is a commit, not a paragraph
+
+Some resolutions change what the product does: a default that ships to every cluster, a
+feature gated on the coordinator, a dispatch-model change, a later upstream revert carried
+early, a renumbered catalog OID, an error message. They are legitimate, but they are not
+conflict resolution, and a reviewer must be able to accept or reject each one on its own.
+
+- Default to upstream behaviour; deviate only with a reason you can write in one sentence.
+- Each deviation is its own commit (or PR): `pre-apply <upstream-hash>: …` for a
+  carried-forward upstream commit, `policy: …` for a Greengage choice, the reason in the body.
+- List them, with hashes, at the top of the report. The PG14 b16 merge put twelve of them
+  in one section of a fourteen-kilobyte PR description, and the reviewing team could act on
+  none.
 
 ## Type the inventory before resolving any of it
 
@@ -171,6 +241,9 @@ resolution touched **before** you try to build:
 | Changed signatures | Multi-line-aware caller sweep across the whole tree | Clean-merged callers still passing the old arity — no marker was ever shown |
 | WAL record layout | Read `ParseCommitRecord` / `ParseAbortRecord` first, then the write path | A serialization order that no longer matches its parser |
 | Any resolved file | Brace balance against `:3:` | A hunk whose structure diverged — a spliced function |
+| Bitmask and enum blocks Greengage extends | `grep -h '#define CURSOR_OPT_' src/include/nodes/parsenodes.h \| awk '{print $3}' \| sort \| uniq -d`, and the same for every flag family Greengage appends to | Upstream renumbered its members and the appended Greengage members now alias them — no conflict, because the Greengage lines sit below the upstream block |
+| A node upstream collapsed from N subplans to one | Grep the Greengage loops over that node for `forboth(... resultRelations ...)` and `list_make1(subpath)` | A per-subplan check that now silently runs for the first result relation only |
+| Changed postmaster or auth refusal text | Grep `cdbgang.c`, `src/test/isolation2/sql_isolation_testcase.py` and `gpMgmt/` for the *old* string | A retry surface that no longer matches the message it retries on |
 
 ## Each bring-up phase catches a class the previous one cannot
 
@@ -197,7 +270,11 @@ it is much harder to read.
    because GPORCA falls back to the planner silently a green run may never have exercised
    it. Then `greengage_schedule`, isolation2, contrib and `src/bin`. Every new suite
    surfaces another layer of dropped re-grafts; budget for that rather than treating it as
-   a surprise. See [greengage-testing](../greengage-testing/SKILL.md) and
+   a surprise. An answer file changes only after `gpdiff` has failed it, and only by the
+   failing hunks; an inherited test keeps its upstream statements and is adapted through
+   its inputs (data volume, `DISTRIBUTED BY`, a GUC), never by recording the failure — the
+   toolbox is in [reference/merge-conventions.md](reference/merge-conventions.md). See
+   [greengage-testing](../greengage-testing/SKILL.md) and
    [greengage-answer-files](../greengage-answer-files/SKILL.md).
 5. **CI.** The job matrix runs configurations you do not have locally — assert builds,
    resource groups, JIT, multiple operating systems — and all regress jobs share one
@@ -253,6 +330,15 @@ Per-version evidence, and the rest of the recurring classes, are in
   `extern` survived.
 - **Do not resolve `.out` files early**, and do not resolve them from the upstream side by
   reflex — Greengage's expected output legitimately differs wherever MPP changes the plan.
+- **Do not tidy while you resolve.** Re-indentation, rewording, dead-code removal and
+  duplicate cleanup are separate commits, or they are noise a reviewer has to read through.
+- **Do not activate a code path upstream documents as dead** (`ExecInitInsertProjection` in
+  PG14) to serve a Greengage case. The case belongs in the mechanism upstream uses for the
+  analogous live path; a dead path brought to life re-conflicts at every sync.
+- **Do not record a failed upstream assertion as expected output.** `(0 rows)` becoming
+  `(1 row)`, an "index is used" EXPLAIN that seq-scans, a plan without the node the test
+  exists to show — adapt the test input for MPP or explain why the property cannot hold.
+  The second half of the gate is in [greengage-answer-files](../greengage-answer-files/SKILL.md).
 
 See also: [greengage-internals](../greengage-internals/SKILL.md),
 [greengage-build](../greengage-build/SKILL.md),

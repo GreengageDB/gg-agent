@@ -44,7 +44,7 @@ state back and forth, which is why the agent reports state first.
 ## 4. Report
 
 Campaign state at the top — base, target, conflicts remaining by type, phase reached, what
-is red. Then the uncertainty notes, then failures with their classification and the evidence
+is red. Then the behaviour decisions (each its own commit), then the uncertainty notes, then failures with their classification and the evidence
 behind it, then what was not done.
 
 Do not call a phase green on a summary line. A green regress phase is an empty
