@@ -40,6 +40,7 @@ done | sort -rn
 | Greengage-only tests (`AU`) | Keep, after confirming upstream has no file at that path |
 | Generated files (`configure`, `gram.c`, `*_d.h`) | Never hand-merge. Resolve the source, regenerate. `configure` needs **autoconf 2.69** — any other version aborts with `Autoconf version 2.69 is required`, an `m4_fatal` that `configure.ac` carries deliberately |
 | Copyright-year and pgindent-only hunks | Scriptable; take upstream |
+| Docs present on both sides (`UU` under `doc/`) | Take upstream. Greengage documentation lives in its own repository; re-grafting synopsis text into `doc/` only re-conflicts next time |
 | `expected/*.out`, `sql/*` | Defer to the regress phase entirely |
 
 ## The long-tail sweep
@@ -120,6 +121,33 @@ The class that costs the most, because nothing draws attention to it.
   takes upstream wholesale and the backport disappears.
 - **A relocated table or registry loses its Greengage entries** — the authority-relocation
   class, with worked examples in [version-traps.md](version-traps.md).
+- **Upstream renumbers a flag set Greengage extends.** Greengage's `#define`s sit a few
+  lines below the upstream block, so the merge is clean — and the appended members now alias
+  upstream's. PG14 `dd13ad9d39a` moved `CURSOR_OPT_GENERIC_PLAN`/`CUSTOM_PLAN` to
+  `0x0200`/`0x0400`, exactly Greengage's `CURSOR_OPT_UPDATABLE`/`PARALLEL_RETRIEVE`
+  (`parsenodes.h`); every plpgsql cursor was then planned as a forced generic plan and
+  bypassed ORCA. Verify pairwise distinctness mechanically after every merge.
+- **A header stops pulling a transitive include.** PG14's pgstat split removed
+  `storage/proc.h` from `pgstat.h`; `cdbdisp_async.c` and `cdbgang_async.c` lost
+  `storage/latch.h` and failed to compile. Grep Greengage-only directories for the symbols
+  of the trimmed header and include it explicitly.
+- **A changed message loses its Greengage consumers.** PG14 `df9384492b8` split the
+  postmaster's "starting up" refusal into "not accepting connections" and "not yet
+  accepting connections"; `segment_failure_due_to_recovery()` in `cdbgang.c` and the
+  isolation2 harness kept retrying only on the old text, and mirror-promotion tests failed
+  instead of waiting.
+- **A new `bool` parameter on a lookup that Greengage-only code calls.** Pick the value
+  that preserves the pre-merge behaviour (`get_partition_parent(..., even_if_detached =
+  true)` in `vacuum.c` and the dynamic scans) unless the Greengage caller wants the new
+  filtering.
+- **A new FDW or AM callback runs on every segment.** `ExecForeignTruncate` (PG14
+  `8ff1c94649f`) is reached by the dispatched `TRUNCATE` on each QE; without an explicit
+  QD-only decision the remote table is truncated once per segment. Every new callback gets
+  a QD/QE decision in the merge, not a TODO.
+
+The full post-resolution audit list — collapsed N-subplan nodes, lazy accessors, pipeline
+entry points, `PG_CATCH` helpers, node-type coverage, raw-parse readers — is in
+[merge-conventions.md](merge-conventions.md).
 
 The systematic defence is a post-resolution audit driven by the sweep's uncertainty notes,
 plus a diff of the merged tree against the nearest reference branch restricted to

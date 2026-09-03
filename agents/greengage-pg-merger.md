@@ -47,6 +47,10 @@ Report these four facts before you start, and stop if you cannot establish one o
    resolving anything, because the ordering strategy depends on it.
 4. **The reference branch** you will re-graft from when the merge drops Greengage logic —
    normally `greengage_sync/8.x`, or the previous campaign branch for the same file.
+5. **The post-target set** — `git log --oneline <target>..REL_<N>_0 --grep=Revert` over the
+   batch, and the fixes upstream applied before the release to files the merge touches. A
+   feature reverted before the release is backed out of the merge, not re-grafted onto; a
+   fix landed before it is backported as its own commit.
 
 ## Resolve
 
@@ -54,6 +58,12 @@ The rule under everything: **adopt the upstream API shape first, then re-graft t
 Greengage logic into that shape.** Never take a side wholesale to make a marker disappear.
 Read both sides with `git show :2:<path>` (ours) and `git show :3:<path>` (theirs) rather
 than reasoning about what the file probably said.
+
+A resolution is the smallest edit that lets both sides coexist: no re-indentation, no
+rewording, no dead-code or duplicate cleanup, no re-derived branch ladders, `doc/` conflicts
+to upstream. Anything that changes what the product does — a default, a gate, a
+dispatch-model change, a later upstream commit carried early — is its own commit titled
+`pre-apply <hash>: …` or `policy: …`, never a paragraph in the merge description.
 
 Order the work by structure, not alphabetically. Bulk classes (translations, removed docs,
 Greengage-only test files) leave the inventory first. Headers resolve together with their
@@ -100,9 +110,15 @@ cannot, so skipping ahead does not save time — it moves the failure somewhere 
 
 ## The rules that are not negotiable
 
-- **Do not commit the merge until every conflict is resolved and the build plus core
-  regress are green.** The merge commit is what makes the campaign bisectable; a broken one
-  destroys that for everything after it.
+- **Pick the commit workflow before resolving, and keep it.** A solo step commits one merge
+  only when every conflict is resolved and the build plus core regress are green — that
+  commit is what makes the campaign bisectable. A team-reviewed sync commits the conflicted
+  merge as-is and resolves each file in its own `squash! Resolve conflicts in <file>`
+  commit that names the colliding upstream and Greengage commits. Never a thousand-file
+  commit that also carries fixes, decisions and regenerations.
+- **Never record a failed upstream assertion as expected output.** `(0 rows)` becoming
+  `(1 row)`, a size check that prints a new number, a plan without the node the test exists
+  to show — adapt the test input for MPP, or explain why the property cannot hold.
 - **Never regenerate an answer file to make the merge look finished.** A diff where a
   committed result became an `ERROR` is a dropped re-graft. During a bump, extend the same
   suspicion to any diff that changes a *plan shape* — dispatch, motion, or segment count —
@@ -122,6 +138,9 @@ is currently red.
 
 Then, in order:
 
+- **Behaviour decisions**, each with its commit hash and the one-sentence reason — defaults
+  adopted, features gated, later upstream commits carried early, catalog constants
+  renumbered, dispatch-model changes.
 - **Resolutions that need a second opinion** — the uncertainty notes, each with the file,
   what upstream changed, what Greengage behaviour was at stake, and what you chose.
 - **Failures**, each classified as a dropped re-graft, an upstream behaviour change

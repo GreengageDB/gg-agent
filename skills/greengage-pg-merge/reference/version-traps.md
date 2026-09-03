@@ -60,6 +60,53 @@ update needs `expand_targetlist` to run *first*, AO relations cannot fetch by TI
 leaf. Symptoms range from `could not find gp_segment_id in subplan's targetlist` to a
 silently NULL partition key.
 
+**The single-subplan collapse.** `86dc90056df` also collapsed ModifyTable from one subplan
+per result relation to one subplan over an Append. Every Greengage loop that was "per
+subplan" — the Motion's `numsegments` (`adjust_modifytable_subpaths`), the Explicit
+Redistribute elision (`can_elide_explicit_motion`), the UPDATE-trigger prohibition
+(`make_splitupdate_path`), the locus-compatibility check — must become "per result
+relation" or it silently degrades to "first relation only"; a `forboth` over
+`resultRelations` with a `list_make1(subpath)` is the tell. Route the Greengage special
+cases (the split-update INSERT half, ORCA, AO) through upstream's
+`ExecBuildUpdateProjection` rather than adding parallel old-row mechanisms, translate child
+attribute numbers with `adjust_inherited_attnums_multilevel()` never by name, derive child
+facts from `AppendRelInfo` rather than catalog walks in `preprocess_targetlist`, and do not
+bring upstream's dead `ExecInitInsertProjection` to life. ORCA's translator builds the node
+directly: the child plan goes in `plan.lefttree`, `updateColnosLists` must be filled because
+`ExecInitUpdateProjection` reads it, and UPDATE targetlists are never padded for dropped
+columns.
+
+**The COPY pipeline restructure** (`f82de5c46`, chunked encoding conversion) moves
+validation into `raw_buf → input_buf`. Greengage entry points that bypass that pipeline keep
+their own contract: custom formatters validate only through `pg_custom_to_server()`, so the
+old `need_transcoding` formula must survive for them as a separate flag, and single-row
+error handling must consume the offending line before retrying — a conversion error that
+consumes nothing makes `NextCopyFrom` log phantom empty rejects until the reject limit
+aborts the load. External-table callbacks set `raw_reached_eof` themselves; `CopyGetData`
+keeps Greengage's single-size signature for QD→QE frames.
+
+**Greengage-only callers of changed PG14 signatures**, none of which conflicts:
+`find_inheritance_children(+include_detached)`, `get_partition_parent(+even_if_detached)`,
+`RelationGetPartitionDesc(+include_detached)`, `DeleteInheritsTuple(4 args)`,
+`estimate_num_groups(+estinfo)`, the 3-argument Greengage `try_relation_open` against
+upstream's new 2-argument calls, and the 4-argument enum-returning Greengage
+`XidInMVCCSnapshot` in `pg_inherits.c`. The pgstat split drops the transitive
+`storage/latch.h` include from `cdbdisp_async.c`/`cdbgang_async.c`; `pg_stat_get_activity`
+gains `queryid` before Greengage's trailing `sess_id`/`rsgid`/`rsgname` outputs (move them
+to 30–32); `FirstBootstrapObjectId` moves to 13000 and lives in `pg_magic_oid.h` on the
+Greengage side; upstream `dd13ad9d39a` renumbers `CURSOR_OPT_*` onto Greengage's
+`UPDATABLE`/`PARALLEL_RETRIEVE` bits.
+
+**Reverted before 14.0 — do not port onto them:** the XLogReader state machine, circular
+decode buffer and recovery prefetch (`323cbe7`, `f003d9f`, `1d25757` → `c2dc19342e0`), and
+psql's "show all query results" (`3a5130672` → `fae65629cec`; the freeze-era psql also
+swallows every NOTICE sent after an ERROR, DTX abort and retry messages included).
+**Fixed before 14.0 or in 14.x — backport:** `0e69f705cc1` (autovacuum's unguarded
+`SearchSysCache1` on a dropped partition child, a worker SIGSEGV that resets the segment),
+`37e1cce4ddf` + `ffff00a3556` (libpq SNI dereferences the NULL `pghost` of hostaddr-only
+gang connections when `ssl=on`), `dad1539aec2` (14.2, HOT-chain corruption during pruning),
+`61a86ed55ba` + `f6162c020c8` (parallel VACUUM overlooking indexes).
+
 **Aggregation.** PG14 assigns `Aggref.aggno`/`aggtransno` in `preprocess_aggrefs`, which
 **GPORCA plans never pass through** — so the DXL-to-plan translator has to renumber each
 Agg node's Aggrefs densely, or every multi-aggregate query returns the first aggregate's

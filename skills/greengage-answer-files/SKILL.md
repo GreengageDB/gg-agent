@@ -1,6 +1,6 @@
 ---
 name: greengage-answer-files
-description: Regenerate Greengage regression answer files without burying a real bug - the success-to-ERROR safety gate, reading gpdiff regression.diffs rather than git diff, init_file matchignore and matchsubs masks, atmsort blind spots, base .out vs _optimizer.out selection, and .source-generated tests. Use when pg_regress reports FAILED or failed (ignored), when a test appears in regression.diffs, when a lone rerun dies with relation "tenk1" does not exist, or before cp results/foo.out expected/foo.out.
+description: Regenerate Greengage regression answer files without burying a real bug - the success-to-ERROR safety gate, the upstream-assertion-still-holds gate and MPP test-input adaptation, reading gpdiff regression.diffs rather than git diff, init_file matchignore and matchsubs masks, atmsort blind spots, base .out vs _optimizer.out selection and their sibling files, and .source-generated tests. Use when pg_regress reports FAILED or failed (ignored), when a test appears in regression.diffs, when a lone rerun dies with relation "tenk1" does not exist, or before cp results/foo.out expected/foo.out.
 license: Apache-2.0
 metadata:
   author: GreengageDB
@@ -53,6 +53,30 @@ Then work the checklist. Every rule here is absolute.
 | Row set changed but sorted row set identical | Reorder noise. atmsort sorts unordered results, so gpdiff already ignored it; only `git diff` shows it. |
 | Test failed under `Out of memory`, `could not fork`, or a segment down | Discard the whole run. Do not regenerate from it. |
 | A clean re-run reports `ok    ` and `regression.diffs` is gone | **This is the definitive proof.** pg_regress unlinks `regression.diffs` and `regression.out` when the diff file came out empty (`pg_regress.c:3446`, `:3458`). |
+
+## The gate has a second half: the upstream assertion must still hold
+
+A block that ends in a success can still be a failure. Upstream tests assert through their
+output — `(0 rows)` from a query that returns only violations, a `pg_relation_size`
+equality, an `EXPLAIN` that must show an index scan or a particular node. When MPP changes
+the physical facts the query still "succeeds", the ERROR gate stays quiet, and a
+regeneration records the failed assertion as the expectation; the test asserts nothing
+from then on. Before regenerating, ask what the block proves, and adapt the **input** so it
+still proves it on a cluster. `sql/brin.sql:500-504` is the shipped model — *"GPDB: use
+more rows, and a larger statistics sample, to get the same plan"*, then `set statistics
+1000` and 200000 rows so the planner keeps choosing the BRIN index the test exists to show.
+
+| The upstream block assumes | Adapt the input with |
+|---|---|
+| One heap on one page (`pg_relation_size` arithmetic, "tuple larger than fillfactor") | The same distribution-key value for every row, or `DISTRIBUTED REPLICATED`; sizes for the 32 kB block |
+| A plan the optimizer must pick on a small table | More rows and a larger statistics target (`brin.sql`), or the `enable_*` / `optimizer_enable_*` GUC that forces the shape under both optimizers |
+| A GUC name, option or syntax an upstream rule now rejects, in a Greengage-specific test | Rename or rephrase the input so the Greengage feature stays under test — never record the new `ERROR` |
+| A single-backend invariant (an index that must not grow) | Seed every segment first so the baseline is comparable |
+| Statement and comment text | Keep it; inherited `.sql` files stay as close to upstream as the adaptation allows |
+
+Never assert on the segment count or cluster layout, and never let a regression test destroy
+or recreate a data directory. If the property genuinely cannot hold on MPP, say why in a
+comment, and only then record the output.
 
 ## `git diff` over-reports by two orders of magnitude — read `regression.diffs`
 
@@ -232,6 +256,12 @@ The rules that follow from that fallback:
 - ORCA falls back to the Postgres planner silently. A plan you believe came from
   ORCA may not have — and `init_file` masks the `Optimizer:` line that would have
   told you.
+- **A base regeneration has siblings upstream never touches.** Visit them in the same
+  change: `<t>_optimizer.out`, `output/<t>.source`, the `enable_*` GUC lists in
+  `sysviews` and `rangefuncs_cdb`, and the suites outside `src/test/regress` whose expected
+  files carry the same message text (`src/interfaces/gppc/test/expected`,
+  `src/bin/gpfdist/regress/output`, `gpcontrib/*/expected`). The CI regression artifact
+  does not include that contrib tail — read the job log.
 
 The 7.x GitHub Actions workflow runs `regression-tests`, `orca-tests`,
 `resgroup-tests` and `jit-tests` as separate jobs against the same `expected/` tree
@@ -303,8 +333,10 @@ exist and `parallel_schedule` opens with `tablespace`. Drop it from `TESTS` ther
    and friends.
 2. Run the safety gate above on each. Investigate every hit before proceeding.
 3. Decide the rung: mask, fix the test, or regenerate. Prefer the lower number.
-4. If regenerating: `cp results/<t>.out expected/<t>.out`, taking `results/` from
-   the failing CI job where the test is environment-sensitive.
+4. If regenerating: first run `gpdiff.pl … --gpd_init init_file expected/<t>.out
+   results/<t>.out` — a file gpdiff passes is not regenerated, whatever `git diff` shows,
+   and `results/*.out` is never bulk-copied. Then `cp results/<t>.out expected/<t>.out`,
+   taking `results/` from the failing CI job where the test is environment-sensitive.
 5. **Do not hand-clean the copy.** It is tempting to strip the gpdiff-ignored
    lines the raw result carries, but this tree keeps them: 353 of the 765 `.out`
    files under `src/test/regress/expected/` contain the `Table doesn't have 'DISTRIBUTED BY'
@@ -328,6 +360,9 @@ exist and `parallel_schedule` opens with `tablespace`. Drop it from `TESTS` ther
 | `CREATE TABLE AS` with no `DISTRIBUTED BY` | Row placement moves whenever the plan does: the key is deduced from the chosen path (`get_partitioned_policy_from_path`, `cdbllize.c:431`), so ORCA and the planner can pick different keys | Pin `DISTRIBUTED BY` in the `.sql` |
 | Memory-pressure victims | `Out of memory`, `failed to acquire resources`, `could not fork` | Discard the run. gpdemo is small; the results are corrupt, not new. |
 | Environment-specific text | Paths, hostnames, addresses, conninfo, OIDs, `file.c:NNN` line numbers | Mask it in `init_file` |
+| A failed upstream assertion with a "successful" output | `(0 rows)` became `(1 row)`; a size check prints a different number; an EXPLAIN lost the node the test names | Adapt the test input for MPP (the second half of the gate above) |
+| Source locations in messages | `(user.c:2093)` appended to an `ereport` that has no `errcode` | Add the missing `errcode()`, or mask it as `init_file`'s `(analyze.c:XXX)` rules do; never bake the line number |
+| An `_optimizer.out` full of `did not get … plan` warnings | ORCA ignores `enable_seqscan`/`enable_bitmapscan` | Force the shape with `optimizer_enable_tablescan`/`optimizer_enable_bitmapscan` in the `.sql`; a warning per query is a failure to adapt, not ORCA's answer |
 | Coverage-defeating regens | The new plan no longer uses the feature the test exists to prove — a partition-elimination test that now scans every partition, an index test that now seq-scans | **Hold and investigate.** Regenerating deletes the coverage silently. This is the most expensive mistake in this skill. |
 | Anything validated only under `--ignore-plans` | The test goes green only when that switch is on | The switch ignores *all* plan content, `COSTS OFF` included. Re-verify without it; never commit on its strength. |
 
