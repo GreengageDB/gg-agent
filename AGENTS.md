@@ -16,7 +16,8 @@ skills/<skill-name>/
   rules/*.md           # optional: atomic, individually-loadable rules
 commands/*.md          # slash commands
 agents/*.md            # subagents
-tools/validate_skills.py
+scripts/*.py           # runtime scripts an agent executes
+tools/*.py             # repository validation, run by CI and before a commit
 ```
 
 Skill directories are `kebab-case` and **always prefixed `greengage-`**.
@@ -122,6 +123,42 @@ apply in full: no facts from other Greenplum forks, and no claim about `7.x` tha
 actually observed on a campaign branch. If you add a third file that needs this exception,
 that is a signal to reconsider the boundary, not to widen it quietly.
 
+**The documentation skills are grounded elsewhere, and only where they must be.** The
+`greengage-docs-*` skills describe the Antora repositories behind `greengagedb.org` and the
+Arenadata *Syntax & Grammar* guide, neither of which is in `GreengageDB/greengage`. Facts
+about the docs tooling are grounded on `andreyaksenov/docs-tool` at a named commit; facts
+about house style on a cited line of the guide. Rule 1 still binds the part that matters
+most: **greengage-docs-verify checks documentation claims against `GreengageDB/greengage` at
+a named ref, and nothing else** - it exists precisely to stop a documentation claim being
+verified against other documentation. Two component repositories are also in scope,
+`GreengageDB/gpbackup` and `GreengageDB/pxf`, on their own release cycles.
+
+## Runtime scripts (`scripts/*.py`)
+
+`scripts/` holds code an **agent** runs against somebody's repository; `tools/` holds code a
+**contributor** runs against this one. Keep the two apart - a validation script that needs a
+docs checkout, or a runtime script that only works from this repository's root, is in the
+wrong directory.
+
+Skills, commands and subagents refer to them as `${CLAUDE_PLUGIN_ROOT}/scripts/<name>` -
+never a relative path, never an absolute one. A relative path resolves against whatever
+directory the agent happens to be standing in, which for these scripts is somebody else's
+repository.
+
+The house rules for a runtime script, enforced by `tools/check_scripts.py`:
+
+- **Stdlib only.** No pip, no vendored third-party code. `tools/validate_skills.py` is the
+  worked example - it hand-rolls a frontmatter parser and says in the docstring why.
+- **A module docstring with a `Usage:` block**, and a `--help` that works with no repository,
+  no network and no arguments.
+- **Exit `0` clean, `1` findings, `2` usage error**, matching `docs_tool.py` so the two
+  compose. Never exit `0` for work that did not happen: refuse instead, and say what is
+  missing.
+- **Actionable errors.** Name the remediation, not the failure - "run from the docs
+  repository root, or pass --repo PATH", not "no files found".
+- **Never vendor an unlicensed dependency.** `docs_tool.py` carries no licence: it is
+  fetched at a pinned URL and invoked, and that constraint is documented where it is used.
+
 ## Rule files (`rules/*.md`)
 
 Used by the rule-library skills (`greengage-schema-design`,
@@ -189,6 +226,7 @@ trigger-oriented rules as a skill description.
 
 ```bash
 python3 tools/validate_skills.py
+python3 tools/check_scripts.py
 ```
 
 It checks: frontmatter parses and `name` matches the directory; description length and the

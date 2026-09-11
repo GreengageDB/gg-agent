@@ -63,6 +63,18 @@ Written for **Greengage 7.x** (PostgreSQL 12.22, *coordinator* terminology), wit
 | [greengage-contribute](skills/greengage-contribute/SKILL.md) | Preparing a pull request — which branch to target, the CLA, formatting rules, and the review process |
 | [greengage-pg-merge](skills/greengage-pg-merge/SKILL.md) | Merging an upstream PostgreSQL major version into the fork — conflict clustering, semantic re-grafting, the phased bring-up, and the traps that recur every bump |
 
+### Reviewing the documentation
+
+The documentation lives in its own Antora repositories, in English and Russian, and
+describes a database whose behaviour changes every release.
+
+| Skill | Use it when |
+|---|---|
+| [greengage-docs-review](skills/greengage-docs-review/SKILL.md) | Reviewing a docs merge request or page set — the layer pipeline, `docs_tool`'s rules, the gates that keep later layers honest, severity and reporting |
+| [greengage-docs-style](skills/greengage-docs-style/SKILL.md) | Misprints, grammar and house style — headings, links, images, tables, terminology, and which rules a program cannot settle |
+| [greengage-docs-i18n](skills/greengage-docs-i18n/SKILL.md) | English and Russian pages have drifted — line-for-line parity, the `sync` repair path, and the Russian rules a parity check cannot see |
+| [greengage-docs-verify](skills/greengage-docs-verify/SKILL.md) | Checking what a page asserts against the source at a pinned tag — GUC defaults, catalog columns, SQL synopses, utility and CLI flags |
+
 ## Commands
 
 | Command | Does |
@@ -75,6 +87,7 @@ Written for **Greengage 7.x** (PostgreSQL 12.22, *coordinator* terminology), wit
 | `/gg-triage-ci` | Fetch a failed CI run's artifacts and classify every failure |
 | `/gg-skew` | Data and computational skew report for a table or a whole database |
 | `/gg-pg-bump` | Start or continue a PostgreSQL major-version bump on the campaign line |
+| `/gg-doc-review` | Review documentation layer by layer and report findings on the pages or the merge request |
 
 ## Subagents
 
@@ -83,6 +96,7 @@ Written for **Greengage 7.x** (PostgreSQL 12.22, *coordinator* terminology), wit
 | `greengage-mpp-reviewer` | Reviews a diff for MPP correctness — dispatch desync, motion and locus, append-optimized aux relations, catalog changes, utility-mode assumptions |
 | `greengage-perf-analyst` | End-to-end slow-query analysis: plan, skew, statistics, storage layout, distribution key |
 | `greengage-pg-merger` | Runs a PostgreSQL major-version bump: conflict inventory, semantic resolution, and the compile → unit-test → initdb → regress → isolation2 → CI ladder |
+| `greengage-docs-reviewer` | Reviews the documentation: markup and references, misprints, grammar, EN/RU consistency, technical correctness against a pinned ref, house style |
 
 ## Use it on GitHub pull requests
 
@@ -164,6 +178,7 @@ version handling, and the grounding rules that keep facts tied to
 
 ```bash
 python3 tools/validate_skills.py     # structure, frontmatter, links, manifests
+python3 tools/check_scripts.py       # runtime scripts parse, self-describe, answer --help
 python3 tools/check_doc_links.py     # external documentation URLs (needs network)
 ```
 

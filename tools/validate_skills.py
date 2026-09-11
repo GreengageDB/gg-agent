@@ -37,6 +37,14 @@ FORBIDDEN = {
     "arenadata/": "no arenadata/ directory exists in GreengageDB/greengage",
 }
 
+# Every forbidden string above names a *path inside a source checkout*. The same characters
+# inside a URL are a citation, not a porting regression: the documentation repositories live
+# under gitlab.adsw.io/arenadata/, and the docs skills cannot describe them without saying so.
+# Match a URL, an SSH remote, or a host-qualified repository path, and ignore hits inside one.
+URL_CONTEXT_RE = re.compile(
+    r"(?:https?://|git@|\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/)[^\s`\"'()<>\[\]]*"
+)
+
 errors: list[str] = []
 warnings: list[str] = []
 
@@ -93,11 +101,23 @@ def parse_frontmatter(text: str, where: str) -> dict | None:
 def check_forbidden(path: Path, text: str) -> None:
     rel = path.relative_to(ROOT)
     for needle, why in FORBIDDEN.items():
-        if needle in text:
-            for i, line in enumerate(text.split("\n"), 1):
-                if needle in line:
-                    err(f"{rel}:{i}", f"forbidden string {needle!r} - {why}")
-                    break
+        if needle not in text:
+            continue
+        for i, line in enumerate(text.split("\n"), 1):
+            if needle in line and _outside_urls(line, needle):
+                err(f"{rel}:{i}", f"forbidden string {needle!r} - {why}")
+                break
+
+
+def _outside_urls(line: str, needle: str) -> bool:
+    """True if `needle` occurs in `line` somewhere other than inside a URL."""
+    spans = [m.span() for m in URL_CONTEXT_RE.finditer(line)]
+    start = line.find(needle)
+    while start != -1:
+        if not any(lo <= start < hi for lo, hi in spans):
+            return True
+        start = line.find(needle, start + 1)
+    return False
 
 
 def check_links(path: Path, text: str) -> None:

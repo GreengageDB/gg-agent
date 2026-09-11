@@ -23,7 +23,8 @@ URL_RE = re.compile(r"https?://[^\s()\[\]<>\"'`]+")
 TIMEOUT = 20
 
 # Placeholder URLs in templates and the authoring contract are patterns, not links.
-PLACEHOLDER_MARKERS = ("{", "<", "…", "...")
+# "$" covers a shell variable standing in for a project path or a host in a snippet.
+PLACEHOLDER_MARKERS = ("{", "<", "…", "...", "$")
 
 # Hosts that only ever appear inside worked examples (gpfdist locations, S3
 # endpoints). They are not meant to resolve.
