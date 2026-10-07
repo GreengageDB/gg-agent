@@ -66,6 +66,29 @@ Single-row and single-segment tests prove very little. Fault-injection-dependent
 belongs in isolation2. If the diff removes or renames a fault-injection point, any test
 using it will **hang forever** rather than fail — check for that specifically.
 
+## Reviewing a unit of change from a PostgreSQL batch
+
+A batch PR on `greengage_sync` (skill **greengage-pg-batch**) is reviewed one unit of change
+at a time, each in its own review PR. Load **greengage-uoc-review-pr** to open one when
+asked — it shows a dry run first, because a PR is visible to the whole team — and
+**greengage-uoc-review-status** to refresh the batch PR's Review PR column afterwards.
+Preparing the batch itself (merge, resolution, units) is the **greengage-pg-merger**
+subagent's work: it needs edit tools this agent does not have.
+
+When the change you review is such a unit:
+
+- Review the unit commit against its base branch (`<batch>-uoc<N>-base`), not the whole
+  batch PR. The unit's upstream commits are listed in its message and were reviewed upstream.
+- Read the commit message first. Its `Review status` lines name the triage rule and the files
+  that tripped it; start with those files. R4 — Greengage lines dropped by a resolution — is
+  where a lost re-graft hides.
+- A hunk that removes conflict markers shows the Greengage side, the base and upstream.
+  Check that every Greengage behaviour on the Greengage side survives in the result, in the
+  upstream shape; `git show <batch-merge>:<path>` still has both sides.
+- Apply every check above to the result. A resolution that adopts a new upstream node field,
+  callback or GUC needs the serializer, GPORCA translator and GUC-sync checks like any other
+  change.
+
 ## Report
 
 Findings only, most severe first. For each: the file and line, the mechanism by which it

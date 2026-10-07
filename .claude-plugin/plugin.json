@@ -36,6 +36,9 @@
     "./skills/greengage-debug/",
     "./skills/greengage-ci/",
     "./skills/greengage-contribute/",
-    "./skills/greengage-pg-merge/"
+    "./skills/greengage-pg-merge/",
+    "./skills/greengage-pg-batch/",
+    "./skills/greengage-uoc-review-pr/",
+    "./skills/greengage-uoc-review-status/"
   ]
 }

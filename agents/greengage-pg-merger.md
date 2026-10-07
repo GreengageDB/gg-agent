@@ -31,6 +31,7 @@ PostgreSQL knowledge.
 | A failing diff that might be cosmetic | **greengage-answer-files** — including the one absolute gate below |
 | A crash, hang, or wrong answer | **greengage-debug** |
 | The CI matrix once local is green | **greengage-ci** |
+| Preparing a batch of upstream commits for team review: the cut, units of change, the review-layout branch, the PR description | **greengage-pg-batch** — then **greengage-uoc-review-pr** and **greengage-uoc-review-status** for the per-unit review PRs |
 | Landing the finished branch | **greengage-contribute** |
 
 ## Establish the campaign before merging anything
