@@ -62,6 +62,9 @@ Written for **Greengage 7.x** (PostgreSQL 12.22, *coordinator* terminology), wit
 | [greengage-ci](skills/greengage-ci/SKILL.md) | A CI run is red — fetching artifacts and classifying each failure as cosmetic, real, or flaky |
 | [greengage-contribute](skills/greengage-contribute/SKILL.md) | Preparing a pull request — which branch to target, the CLA, formatting rules, and the review process |
 | [greengage-pg-merge](skills/greengage-pg-merge/SKILL.md) | Merging an upstream PostgreSQL major version into the fork — conflict clustering, semantic re-grafting, the phased bring-up, and the traps that recur every bump |
+| [greengage-pg-batch](skills/greengage-pg-batch/SKILL.md) | Preparing a batch of upstream PostgreSQL commits for team review — picking the cut, the merge with committed markers, units of change, review tiers, the review-layout branch and the templated PR description |
+| [greengage-uoc-review-pr](skills/greengage-uoc-review-pr/SKILL.md) | Opening the review PR for one unit of change of a batch PR, and retargeting it into the batch once approved |
+| [greengage-uoc-review-status](skills/greengage-uoc-review-status/SKILL.md) | Refreshing the batch PR's Review PR column from the state of every unit's review PRs |
 
 ## Commands
 
@@ -149,9 +152,12 @@ the campaign branches in
 [`GreengageDB/greengage_sync`](https://github.com/GreengageDB/greengage_sync), whose `8.x`
 line is already past both shipping lines.
 
-That work is covered by [greengage-pg-merge](skills/greengage-pg-merge/SKILL.md) and the
-`greengage-pg-merger` subagent, and only by those two. They say so at the top, they cite
-`greengage_sync` branches by name, and they are the one deliberate exception to the
+That work is covered by [greengage-pg-merge](skills/greengage-pg-merge/SKILL.md), the
+batch-review skills built on it — [greengage-pg-batch](skills/greengage-pg-batch/SKILL.md),
+[greengage-uoc-review-pr](skills/greengage-uoc-review-pr/SKILL.md) and
+[greengage-uoc-review-status](skills/greengage-uoc-review-status/SKILL.md) — and the
+`greengage-pg-merger` subagent, and only by those. They say so at the top, they cite
+`greengage_sync` branches and pull requests by name, and they are the one deliberate exception to the
 grounding rule in [AGENTS.md](AGENTS.md) that facts must come from `GreengageDB/greengage`.
 Anything else you read here is about the shipping lines; do not carry a command from a
 campaign branch into a `7.x` answer without checking that the file still has that name.
