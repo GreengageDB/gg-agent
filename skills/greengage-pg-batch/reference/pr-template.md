@@ -51,7 +51,9 @@ and why in its description. (UoC N, #PR) below names the unit and its PR.
   combined result. `.github/workflows/sync-uoc-test.yml` merges the review fixes of the unit PRs
   into it, whoever makes them. The workflow is a temporary commit on the base and is removed
   before this PR is merged.
-- Merge this PR with a merge commit, after all unit PRs are merged.
+- Held units, if any: "UoC N (#PR) and UoC M (#PR) are not merged into this PR (see Units of
+  change). Both fix problems that predate the batch, and both stay only on the test branch."
+- Merge this PR with a merge commit, after all unit PRs are merged (except the held ones).
 
 Below: what came from upstream, what was reverted within the batch, and the Greengage
 adaptations. Commit hashes are upstream unless noted.
@@ -82,6 +84,8 @@ adaptations. Commit hashes are upstream unless noted.
 **Decisions to confirm:**
 - {behaviour that differs from upstream or from the previous Greengage behaviour}. (UoC N, {Un})
 - Lost test coverage: {test} ({reason}). (UoC N, {Un})
+- Not merged: UoC N, {what it fixes}. {Why it is held: no reproducer or test; upstream brings
+  it in a later batch as {hash}}.
 
 ## Units of change
 
@@ -92,6 +96,7 @@ adaptations. Commit hashes are upstream unless noted.
 - Build (cassert, ORCA, LLVM, TAP), `unittest-check`, initdb and the demo cluster: {result}.
 - `installcheck-good` under `optimizer=off` and `optimizer=on`: {result}.
 - CI on #{TEST_PR}: run [{id}](https://github.com/GreengageDB/greengage_sync/actions/runs/{id}) {result}.
+  Say that this tree includes the held units and the merged base does not.
 
 ## Follow-ups (not in this PR)
 

@@ -1,6 +1,6 @@
 ---
 name: greengage-uoc-review-pr
-description: Open and carry through the review PRs of a greengage_sync batch split into units of change (UoC) - one <prefix>-uocN -> <prefix>-base PR per unit, opening one or all with uoc_review.py, reading a unit by its description and Review focus, review fixes on the unit branch without force-push, the -test branch CI runs, squash-merging into the base, splitting a unit under review, closing the batch. Use when a reviewer is assigned to a unit, when asked to open the unit PRs of sync-15x-b2, or when a unit PR is approved.
+description: Open and carry through the review PRs of a greengage_sync batch split into units of change (UoC) - one <prefix>-uocN -> <prefix>-base PR per unit, opening them with uoc_review.py, reading a unit by its Review focus, review fixes on the unit branch without force-push, the -test branch CI runs, squash-merging into the base, splitting a unit under review, holding a unit out, closing the batch. Use when a reviewer is assigned to a unit, when asked to open the unit PRs of sync-15x-b2, or when a unit PR is approved.
 license: Apache-2.0
 metadata:
   author: GreengageDB
@@ -91,6 +91,10 @@ the unit PR's diff.
 - The test branch picks the fix up by itself: `sync-uoc-test.yml` on the base merges every unit
   branch the test branch lacks whenever a unit PR changes. Check the test PR's CI after a fix;
   `uoc_sync_test.sh <prefix>` does the same merge by hand if the workflow is stuck.
+- A unit branch that conflicts with the test branch is left out, and the unit PR gets one
+  comment per branch head: "Could not merge … into `<prefix>-test` automatically", with the
+  files. Until someone merges it into the test branch by hand, CI runs without that fix. The
+  workflow fails on the unit's own PR only, so the other units are not held up.
 
 ## Merge: squash into the base, then refresh the table
 
@@ -107,12 +111,29 @@ whose PR is already open"): the first part keeps the number, branch and PR; the 
 new numbers and new PRs; the review fixes already on the branch go to the parts whose files they
 touch. b1 split seven units into three parts each (UoC 29–42).
 
+## Holding a unit out of the batch
+
+A unit that fixes something older than the batch can stay out of it: its PR stays open (b1: as
+a draft), it is never merged into the base, and the test branch keeps it. Hold a unit only when
+the base builds and passes without it, and name it in the batch PR with the reason. b1 held
+UoC 26, a relcache-race fix with no reproducer and no test, and UoC 27, a backport upstream
+brings in a later batch. Record it in the unit table:
+
+```bash
+python3 $U status --pr 660 --repo GreengageDB/greengage_sync --held 26,27
+```
+
+Later runs read the list back from the batch PR (`--held ''` clears it). A held unit is not
+"not merged yet", and its PR is not closed: it is the record of the fix until a later batch
+or a separate PR takes it.
+
 ## Closing the batch
 
-When every unit PR is merged, the base equals the test branch's tree without the workflow file
-and builds. Remove `.github/workflows/sync-uoc-test.yml` from the base, close the test PR, let CI
-run on the batch PR, and hand it to the team: it merges into `next` with a merge commit, after
-two approvals.
+When every unit PR except the held ones is merged, the base builds. Its tree equals the test
+branch's tree without the workflow file and without the held units. Check that difference
+(`git diff <prefix>-base <prefix>-test` shows only those). Remove
+`.github/workflows/sync-uoc-test.yml` from the base, close the test PR, let CI run on the batch
+PR, and hand it to the team: it merges into `next` with a merge commit, after two approvals.
 
 ## What not to do
 
@@ -121,6 +142,7 @@ two approvals.
 - Do not fix another unit's lines in this unit's PR.
 - Do not merge the batch PR, or squash or rebase it; only the unit PRs are squash-merged.
 - Do not leave the workflow file on the base when the batch PR merges.
+- Do not hold a unit the base needs to build or pass, and do not hold one silently.
 
 See also: [greengage-pg-batch](../greengage-pg-batch/SKILL.md) ·
 [greengage-uoc-review-status](../greengage-uoc-review-status/SKILL.md) ·

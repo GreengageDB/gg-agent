@@ -14,7 +14,7 @@ builds once all of them are merged.
 Usage:
     uoc_review.py open   (--prefix P | --pr BATCH) (--uoc N[,N...] | --all) [--repo OWNER/REPO]
                          [--reviewer LOGIN]... [--draft] [--dry-run]
-    uoc_review.py status --pr BATCH [--prefix P] [--repo OWNER/REPO] [--dry-run]
+    uoc_review.py status --pr BATCH [--prefix P] [--held N[,N...]] [--repo OWNER/REPO] [--dry-run]
 
 BATCH is the batch PR, as a number or a URL (https://github.com/OWNER/REPO/pull/660); its
 head branch is <prefix>-base, which gives the prefix. Without --repo the repository comes
@@ -23,7 +23,9 @@ the GitHub API with `gh api` (authenticated gh CLI required); no checkout is nee
 --dry-run prints what would change and writes nothing.
 
 Unit PRs are found by their head branch, <prefix>-uoc<N> in the same repository, so PRs
-opened by hand are found too.
+opened by hand are found too. A unit can be held out of the batch (it stays on the test
+branch only): status --held lists such units, and the list is kept in the batch PR body
+(<!-- uoc-held: 26,27 -->) for later runs; --held '' clears it.
 
 Exit status: 0 done (or nothing to do); 1 refused on a finding (the unit already has an
 open PR); 2 usage or environment error (gh missing or unauthenticated, PR or branch not found).
@@ -39,6 +41,7 @@ import tempfile
 
 UOC_SUBJECT = re.compile(r'^UoC (\d+)(?:/\d+)?: (.*?)(?: \(#\d+\))?$')
 STATUS_BEGIN, STATUS_END = '<!-- uoc-review-status -->', '<!-- /uoc-review-status -->'
+HELD = re.compile(r'<!-- uoc-held: ([\d, ]*) -->')
 
 
 class Refuse(Exception):
@@ -254,26 +257,32 @@ def unit_title(p):
     return (m.group(2) if m else p['title']).replace('|', '\\|')
 
 
-def status_block(found, states, branches):
-    """the unit table: one row per unit branch or unit PR, its PRs oldest first"""
+def status_block(found, states, branches, held):
+    """the unit table: one row per unit branch or unit PR, its PRs oldest first; held units
+    stay on the test branch only and are not counted as pending"""
     rows, tally, pending = [], {}, []
     for n in sorted(set(found) | set(branches)):
         prs = found.get(n, [])
         texts = [(p['number'], state_text(states[p['number']]) if p['number'] in states else p['state'])
                  for p in prs]
         key = texts[-1][1].split(',')[0] if texts else 'no PR'
+        if n in held:
+            key = 'held'
         tally[key] = tally.get(key, 0) + 1
-        if key != 'merged':
+        if key not in ('merged', 'held'):
             pending.append(n)
+        status = '<br>'.join(t[1] for t in texts) or 'no PR yet'
         rows.append('| %d | %s | %s | %s |' % (
             n, unit_title(prs[-1]) if prs else '—', '<br>'.join('#%d' % t[0] for t in texts) or '—',
-            '<br>'.join(t[1] for t in texts) or 'no PR yet'))
-    summary = '**Unit PRs:** %s. Not merged yet: %s. (Updated %s).' % (
+            status + ('<br>**held: test branch only**' if n in held else '')))
+    summary = '**Unit PRs:** %s. Not merged yet: %s.%s (Updated %s).' % (
         ', '.join('%d %s' % (v, k) for k, v in sorted(tally.items(), key=lambda kv: -kv[1])) or 'none',
         ', '.join('UoC %d' % n for n in pending) or 'none',
+        ' Held out of the batch: %s.' % ', '.join('UoC %d' % n for n in sorted(held)) if held else '',
         datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M UTC'))
-    return '\n'.join([STATUS_BEGIN, summary, '', '| UoC | Unit | PR | Status |', '|---|---|---|---|'] + rows +
-                     [STATUS_END]), summary
+    marker = ['<!-- uoc-held: %s -->' % ','.join(str(n) for n in sorted(held))] if held else []
+    return '\n'.join([STATUS_BEGIN] + marker + [summary, '', '| UoC | Unit | PR | Status |', '|---|---|---|---|'] +
+                     rows + [STATUS_END]), summary
 
 
 def update_body(body, block):
@@ -297,9 +306,14 @@ def cmd_status(a):
     found = unit_prs(repo, prefix)
     branches = unit_branches(repo, prefix)
     states = pr_states(repo, sorted(p['number'] for v in found.values() for p in v))
-    block, summary = status_block(found, states, branches)
     for attempt in range(3):
         old = batch['body'] or ''
+        if a.held is not None:
+            held = {int(x) for x in a.held.split(',') if x.strip()}
+        else:
+            m = HELD.search(old)
+            held = {int(x) for x in m.group(1).split(',') if x.strip()} if m else set()
+        block, summary = status_block(found, states, branches, held)
         new = update_body(old, block)
         print('%s#%d: %d unit PRs for %d units, %d unit branches' % (
             repo, batch['number'], sum(len(v) for v in found.values()), len(found), len(branches)))
@@ -340,6 +354,8 @@ def main(argv=None):
     p = sp.add_parser('status', help='refresh the unit table of the batch PR')
     p.add_argument('--pr', required=True, help='batch PR number or URL')
     p.add_argument('--prefix', help='branch prefix (default: the batch PR head without -base)')
+    p.add_argument('--held', help="units held out of the batch, comma-separated ('' clears; "
+                   "default: the list kept in the batch PR body)")
     for p in sp.choices.values():
         p.add_argument('--repo', help='OWNER/REPO (default: from the URL or the current checkout)')
         p.add_argument('--dry-run', action='store_true', help='print what would change, write nothing')

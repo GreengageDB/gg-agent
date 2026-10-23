@@ -49,8 +49,8 @@ sync-15x-b1-raw    next ── the same merge ── 36 bring-up commits     (RA
 Every unit changes only its own lines, so the unit PRs merge cleanly **in any order** and all
 of them together give RAW's tree. The base does not build until all are merged; CI validates
 the test branch instead. The batch PR is merged into `next` **with a merge commit**, after the
-last unit PR, never squashed or rebased, or the upstream ancestry is lost. `next` requires two
-approvals; you never merge it.
+last unit PR that goes into it, never squashed or rebased, or the upstream ancestry is lost.
+`next` requires two approvals; you never merge it.
 
 ## A unit is one upstream change with everything it caused, not a set of files
 
@@ -67,6 +67,11 @@ difflib opcode of a file's DIRTY → RAW change — instead:
 - A Greengage fix that the batch did not cause and CI merely exposed gets **its own unit at
   the end**: b1 had three (HOT-chain backport of PG bug #17255, healing a transiently stale
   ENTRY policy, binary serialization of `WindowDef`).
+- Such a unit may be **held out of the batch**: it stays on the test branch only, and the batch
+  PR names it and why. b1 held two of the three: UoC 26 (the policy heal: the crash it fixes
+  could not be reproduced without it, and it has no test) and UoC 27 (the HOT-chain backport:
+  upstream has it as `18b87b201f7`, which arrives with a later PG15 batch). Only a unit the
+  batch does not depend on can be held — the base must build without it.
 - The number of units is not fixed. A topic with no Greengage operation gets no branch (b1:
   `regex`, `ecpg`, `contrib`, `docs`, `encoding-unicode`, and `access-methods` once emptied).
 
@@ -260,10 +265,16 @@ The test branch: `git checkout -b sync-15x-b2-test sync-15x-b2-base && git merge
 sync-15x-b2-uoc1 …`, push, open its PR into the base, and commit `sync-uoc-test.yml` to
 `.github/workflows/` **on the base**: it runs on `pull_request`, whose workflow file comes
 from the PR's merge ref (`pull_request_target` would read the default branch and never run).
-On every unit PR change it merges the unit branches the test branch lacks. Set the
-`SYNC_PUSH_TOKEN` secret, or its pushes leave the CI runs awaiting approval.
-`uoc_sync_test.sh <prefix>` does the same by hand. **Unit branches must never be force-pushed**:
-the test branch already holds their commits. Remove the workflow before the batch PR merges.
+On every unit PR change it merges the unit branches and the base that the test branch lacks,
+the PR's own unit first. A branch that conflicts with the test branch is **left out** and the
+rest are merged and pushed; every later run retries it. The conflict is reported once per
+branch head, in a comment on that unit's PR (on the triggering PR for the base), and the job
+fails only when the PR's own unit or the base was left out. Set the `SYNC_PUSH_TOKEN` secret,
+or its pushes leave the CI runs awaiting approval. `uoc_sync_test.sh <prefix>` does the same by
+hand without commenting: it prints the branches it left out and exits 1 when the base is one of
+them. (The leave-out behaviour replaced all-or-nothing merging on 2026-10-23 and has been run
+locally only, not yet on GitHub.) **Unit branches must never be force-pushed**: the test branch
+already holds their commits. Remove the workflow before the batch PR merges.
 
 Write the batch PR description from [reference/pr-template.md](reference/pr-template.md),
 fill `{Un}` with `uoc_split.py links`, and keep its unit table current with
@@ -282,6 +293,7 @@ fill `{Un}` with `uoc_split.py links`, and keep its unit table current with
 | `check`: `conflict in <file> merging <unit>` | Two units' operations touch adjacent lines | Override one of them into the other unit |
 | `check complete` lists a use | The fix of a removed identifier sits in another unit | Override that operation, or pin the commit with `primary` |
 | A unit PR shows changes it should not | The branch was rebuilt after review started | Never rebuild an open unit; fix on its branch |
+| A unit PR gets "Could not merge `<prefix>-uocN` into `<prefix>-test`" | A review fix touches lines the test branch already changed differently (another unit, or a fix merged by hand) | Merge the unit branch into the test branch by hand and push; the next run picks the rest up |
 
 ## What not to do
 

@@ -12,10 +12,12 @@
 # on it after it was cut (a unit's own change is already on both sides).
 # The base branch is merged too, so unit PRs merged into it come along.
 # All branches not yet contained in the test branch go in as one octopus
-# merge; if it does not merge cleanly, they are merged one by one to name
-# the branch that conflicts, and nothing is pushed.  The work happens in a
-# temporary worktree, so the current checkout is not touched; the push is a
-# plain fast-forward of the test branch, which re-runs CI on its PR.
+# merge; if it does not merge cleanly, they are merged one by one and a
+# branch that conflicts is left out (the next run retries it), so the rest
+# still reach the test branch.  The exit status is 1 when the base branch is
+# left out.  The work happens in a temporary worktree, so the current checkout
+# is not touched; the push is a plain fast-forward of the test branch, which
+# re-runs CI on its PR.  Unlike sync-uoc-test.yml, it does not comment on PRs.
 set -euo pipefail
 
 push=1
@@ -51,23 +53,32 @@ msg="Merge review fixes into $test
 
 $(for b in "${branches[@]}"; do echo "- ${b#$remote/}: $(git log -1 --format=%s "$b")"; done)"
 
+skipped=() failed=0
 if ! git -C "$wt" merge -q --no-ff --no-edit -m "$msg" "${branches[@]}" >/dev/null 2>&1; then
     git -C "$wt" merge --abort >/dev/null 2>&1 || git -C "$wt" reset -q --hard
     for b in "${branches[@]}"; do
-        if ! git -C "$wt" merge -q --no-ff --no-edit "$b" >/dev/null 2>&1; then
-            echo "conflict when merging ${b#$remote/} into $test:" >&2
-            git -C "$wt" diff --name-only --diff-filter=U >&2
-            exit 1
-        fi
+        m="Merge ${b#$remote/} into $test"$'\n\n'"- ${b#$remote/}: $(git log -1 --format=%s "$b")"
+        git -C "$wt" merge -q --no-ff --no-edit -m "$m" "$b" >/dev/null 2>&1 && continue
+        echo "conflict when merging ${b#$remote/} into $test, left out:" >&2
+        git -C "$wt" diff --name-only --diff-filter=U | sed 's/^/  /' >&2
+        git -C "$wt" merge --abort >/dev/null 2>&1 || git -C "$wt" reset -q --hard
+        skipped+=("${b#$remote/}")
+        [ "$b" != "$remote/$base" ] || failed=1
     done
-    echo "the octopus merge failed but merging one by one did not; merge by hand" >&2
-    exit 1
 fi
 
 new=$(git -C "$wt" rev-parse HEAD)
-git --no-pager diff --stat "$remote/$test" "$new"
-if [ $push -eq 1 ]; then
-    git push "$remote" "$new:refs/heads/$test"
+if [ "$(git rev-parse "$new^{tree}")" = "$(git rev-parse "$remote/$test^{tree}")" ]; then
+    echo "the tree of $test does not change, not pushing"
 else
-    echo "not pushed (-n): $new"
+    git --no-pager diff --stat "$remote/$test" "$new"
+    if [ $push -eq 1 ]; then
+        git push "$remote" "$new:refs/heads/$test"
+    else
+        echo "not pushed (-n): $new"
+    fi
 fi
+if [ ${#skipped[@]} -gt 0 ]; then
+    echo "left out of $test, merge by hand: ${skipped[*]}" >&2
+fi
+exit $failed

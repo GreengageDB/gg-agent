@@ -46,6 +46,7 @@ one); the row lists all of them, oldest first, and the summary counts the newest
 | `changes requested` | A reviewer's latest verdict asks for changes | Push fixes to the unit branch |
 | `approved` | Approved | Squash-merge it into the base |
 | `merged` | Merged into the base | — |
+| `… held: test branch only` | Held out of the batch with `--held`; not counted as pending | Nothing for this batch |
 | `closed` | Closed without merging | Open a new one if the unit still needs review |
 
 The review state is GitHub's `reviewDecision` where the base branch requires reviews. The
@@ -53,6 +54,14 @@ The review state is GitHub's `reviewDecision` where the base branch requires rev
 falls back to each reviewer's latest approving or change-requesting review. `, CI failing` or
 `, CI running` comes from the head commit's check rollup. The title comes from the newest PR,
 without the `UoC N:` prefix and the `(#PR)` suffix of a squash merge.
+
+## Held units
+
+`--held 26,27` marks units that stay on the test branch only
+([greengage-uoc-review-pr](../greengage-uoc-review-pr/SKILL.md), "Holding a unit out of the
+batch"). The list is written into the block as `<!-- uoc-held: 26,27 -->`, so later runs keep it
+without the flag; `--held ''` clears it. The summary then reads
+`40 merged, 2 held. Not merged yet: none. Held out of the batch: UoC 26, UoC 27.` (#660).
 
 ## Editing the description without losing someone else's edit
 

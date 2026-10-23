@@ -10,6 +10,11 @@
 # base that the test branch does not contain yet are merged into it.  A unit's
 # own change is already on both sides, so only the new commits come in.
 #
+# A branch that conflicts with the test branch is left out and the rest are
+# merged and pushed anyway; every later run retries it.  The conflict is
+# reported once per branch head in a comment on the unit's PR (on this PR for
+# the base).  The job fails only when this PR's unit or the base is left out.
+#
 # It runs on pull_request, whose workflow file comes from the PR's merge ref,
 # so the file lives on <prefix>-base (pull_request_target would take it from
 # the default branch).  Remove it before the batch is merged further.  It only
@@ -85,24 +90,51 @@ jobs:
           fi
           echo "merging into $test: ${branches[*]#origin/}"
 
+          # this PR's unit first, so that a conflict between it and a unit left
+          # out by an earlier run is put down to the latter
+          ordered=()
+          for b in "${branches[@]}"; do [ "$b" != "origin/$HEAD" ] || ordered+=("$b"); done
+          for b in "${branches[@]}"; do [ "$b" = "origin/$HEAD" ] || ordered+=("$b"); done
+
+          # every run retries a left-out branch, so comment once per branch head
+          report() {
+            local pr=$1 b=$2 files=$3 marker comments
+            marker="<!-- sync-uoc-test ${b#origin/} $(git rev-parse "$b") -->"
+            comments=$(gh api --paginate "repos/$REPO/issues/$pr/comments" --jq '.[].body' || true)
+            if grep -qF -- "$marker" <<<"$comments"; then return 0; fi
+            gh pr comment "$pr" --repo "$REPO" --body "Could not merge \`${b#origin/}\` into \`$test\` automatically, so \`$test\` and its CI go without it for now. Conflicting files:"$'\n\n'"${files:-(none, see the log of run $GITHUB_RUN_ID)}"$'\n\n'"Merge it into \`$test\` by hand."$'\n\n'"$marker" || true
+          }
+
           git checkout -q --detach "origin/$test"
           msg="Merge review fixes into $test (PR #$PR)
 
-          $(for b in "${branches[@]}"; do echo "- ${b#origin/}: $(git log -1 --format=%s "$b")"; done)"
+          $(for b in "${ordered[@]}"; do echo "- ${b#origin/}: $(git log -1 --format=%s "$b")"; done)"
 
-          if ! git merge -q --no-ff --no-edit -m "$msg" "${branches[@]}"; then
+          skipped=() failed=
+          if ! git merge -q --no-ff --no-edit -m "$msg" "${ordered[@]}"; then
             git merge --abort 2>/dev/null || git reset -q --hard
-            for b in "${branches[@]}"; do
-              if ! git merge -q --no-ff --no-edit "$b"; then
-                files=$(git diff --name-only --diff-filter=U | sed 's/^/- `/; s/$/`/')
-                body="Could not merge \`${b#origin/}\` into \`$test\` automatically. Conflicting files:"$'\n\n'"$files"$'\n\n'"Merge it into \`$test\` by hand."
-                gh pr comment "$PR" --repo "$REPO" --body "$body" || true
+            for b in "${ordered[@]}"; do
+              m="Merge ${b#origin/} into $test (PR #$PR)"$'\n\n'"- ${b#origin/}: $(git log -1 --format=%s "$b")"
+              git merge -q --no-ff --no-edit -m "$m" "$b" && continue
+              files=$(git diff --name-only --diff-filter=U | sed 's/^/- `/; s/$/`/')
+              git merge --abort 2>/dev/null || git reset -q --hard
+              skipped+=("$b")
+              if [ "$b" = "origin/$HEAD" ] || [ "$b" = "origin/$BASE" ]; then
                 echo "::error::conflict merging ${b#origin/} into $test"
-                exit 1
+                failed=1
+                report "$PR" "$b" "$files"
+              else
+                echo "::warning::conflict merging ${b#origin/} into $test, left out"
+                pr=$(gh pr list --repo "$REPO" --head "${b#origin/}" --base "$BASE" \
+                       --json number --jq '.[0].number // empty' || true)
+                [ -z "$pr" ] || report "$pr" "$b" "$files"
               fi
             done
-            echo "::error::the octopus merge failed but the one-by-one merges did not"; exit 1
           fi
+          [ -z "$failed" ] || echo "failed=1" >> "$GITHUB_OUTPUT"
+          for b in "${skipped[@]}"; do
+            echo "left out \`${b#origin/}\`: it conflicts with \`$test\`" >> "$GITHUB_STEP_SUMMARY"
+          done
 
           if [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse "origin/$test^{tree}")" ]; then
             # e.g. a unit PR merged into the base: nothing new for CI to test
@@ -139,3 +171,12 @@ jobs:
               echo "::warning::could not approve run $id; approve it on the test PR"
             fi
           done
+
+      # after the push and the approval, so that the other units are not held up
+      - name: Fail if this PR's unit or the base was left out
+        if: steps.merge.outputs.failed != ''
+        env:
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          echo "::error::$HEAD or its base conflicts with the test branch, see the PR comment"
+          exit 1
