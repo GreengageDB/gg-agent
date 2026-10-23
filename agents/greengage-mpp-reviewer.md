@@ -68,20 +68,19 @@ using it will **hang forever** rather than fail — check for that specifically.
 
 ## Reviewing a unit of change from a PostgreSQL batch
 
-A batch PR on `greengage_sync` (skill **greengage-pg-batch**) is reviewed one unit of change
-at a time, each in its own review PR. Load **greengage-uoc-review-pr** to open one when
-asked — it shows a dry run first, because a PR is visible to the whole team — and
-**greengage-uoc-review-status** to refresh the batch PR's Review PR column afterwards.
-Preparing the batch itself (merge, resolution, units) is the **greengage-pg-merger**
-subagent's work: it needs edit tools this agent does not have.
+A batch on `greengage_sync` (skill **greengage-pg-batch**) is reviewed one unit of change
+at a time, each in its own PR from `<prefix>-uoc<N>` into `<prefix>-base`. Load
+**greengage-uoc-review-pr** to open them when asked — it shows a dry run first, because a PR is
+visible to the whole team — and **greengage-uoc-review-status** to refresh the batch PR's unit
+table afterwards. Preparing the batch itself (merge, resolution, units) is the
+**greengage-pg-merger** subagent's work: it needs edit tools this agent does not have.
 
 When the change you review is such a unit:
 
-- Review the unit commit against its base branch (`<batch>-uoc<N>-base`), not the whole
-  batch PR. The unit's upstream commits are listed in its message and were reviewed upstream.
-- Read the commit message first. Its `Review status` lines name the triage rule and the files
-  that tripped it; start with those files. R4 — Greengage lines dropped by a resolution — is
-  where a lost re-graft hides.
+- Review the unit PR's diff (`<prefix>-base`...`<prefix>-uoc<N>`), not the whole batch. The
+  unit's upstream commits are listed in its description and were reviewed upstream.
+- Read the description first: its `Review focus:` names where to look. A Greengage line that
+  is in neither the resolution nor the merge base is where a lost re-graft hides.
 - A hunk that removes conflict markers shows the Greengage side, the base and upstream.
   Check that every Greengage behaviour on the Greengage side survives in the result, in the
   upstream shape; `git show <batch-merge>:<path>` still has both sides.

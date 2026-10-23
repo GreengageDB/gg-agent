@@ -120,8 +120,10 @@ exist there. The exception covers the files that document that workflow and noth
 commits prepared for team review), `greengage-uoc-review-pr` and
 `greengage-uoc-review-status` (the per-unit review of such a batch), the
 `greengage-pg-merger` subagent, and the scripts they run (`scripts/pg_batch.py`,
-`scripts/uoc_review.py`). They are grounded on named `greengage_sync` branches and pull
-requests instead (`8.x`, `next`, `claude-merge-*`, `sync-<major>x-b<N>`, PR #626), and every
+`scripts/uoc_split.py`, `scripts/uoc_review.py`, `scripts/uoc_sync_test.sh`,
+`scripts/sync-uoc-test.yml`; `scripts/gpdiff_min.py` and `scripts/strip_gpdiff_ignored.pl` are
+generic answer-file tools and work on any line). They are grounded on named `greengage_sync` branches and pull
+requests instead (`8.x`, `next`, `claude-merge-*`, `sync-<major>x-b<N>`, PRs #626 and #660), and every
 version claim in them is verifiable with `git show <branch>:configure.ac`. Rules 2 and 3
 still apply in full: no facts from other Greenplum forks, and no claim about `7.x` that was
 actually observed on a campaign branch. The boundary is the workflow, not a file count: a

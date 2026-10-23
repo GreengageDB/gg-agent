@@ -1,97 +1,88 @@
 ---
 name: greengage-uoc-review-status
-description: Update the Review PR column of a greengage_sync batch PR's units-of-change table - finding each unit's review PRs by body marker or uoc<N> head branch, reading state, draft, review verdicts and CI through the GitHub API, writing #<n> <status> per unit plus a summary of unreviewed units, idempotently and without clobbering concurrent edits. Use when the Review PR column is stale, after review PRs were opened, approved or merged, or when asked which units are still unreviewed.
+description: Keep the unit table of a greengage_sync batch PR current - finding every unit PR by its <prefix>-uoc<N> head branch, reading state, draft, review verdicts and CI through the GitHub API, writing one row per unit with all its PRs and a summary of units not merged yet, idempotently and without clobbering concurrent edits. Use when the batch PR's unit table is stale, after unit PRs were opened, approved, merged or split, or when asked which units are still not merged.
 license: Apache-2.0
 metadata:
   author: GreengageDB
-  version: "0.1.0"
-  greengageVersion: "8.x campaign line in greengage_sync (batch PRs built by greengage-pg-batch)"
+  version: "0.2.0"
+  greengageVersion: "8.x campaign line in greengage_sync (batches split by greengage-pg-batch)"
 ---
 
-# Keeping the batch PR's review column current
+# Keeping the batch PR's unit table current
 
-The units-of-change table of a batch PR ([greengage-pg-batch](../greengage-pg-batch/SKILL.md))
-ends with a **Review PR** column. It starts as `—` for every unit. Review PRs are opened unit
-by unit ([greengage-uoc-review-pr](../greengage-uoc-review-pr/SKILL.md)) and move through
-review at different speeds; this skill rewrites that column, and a one-line summary above
-the table, from the review PRs' real state.
+A batch split by [greengage-pg-batch](../greengage-pg-batch/SKILL.md) is reviewed as one PR per
+unit ([greengage-uoc-review-pr](../greengage-uoc-review-pr/SKILL.md)), and the units move at
+different speeds. This skill writes a table into the batch PR's description — one row per unit:
+number, title, its PRs, their state — and a summary line above it, from the PRs' real state.
 
 ```bash
 U=${CLAUDE_PLUGIN_ROOT}/scripts/uoc_review.py
-python3 $U status --pr https://github.com/GreengageDB/greengage_sync/pull/626 --dry-run
-python3 $U status --pr 626 --repo GreengageDB/greengage_sync
+python3 $U status --pr https://github.com/GreengageDB/greengage_sync/pull/660 --dry-run
+python3 $U status --pr 660 --repo GreengageDB/greengage_sync
 ```
 
-Everything goes through `gh api`; no checkout is needed. The dry run prints each unit's new
-cell and the summary and writes nothing. The real run is safe to repeat: when nothing but the
-timestamp would change, it prints `no change` and does not touch the PR.
+Everything goes through `gh api`; no checkout is needed. The dry run prints the summary and the
+table and writes nothing. The real run is safe to repeat: when nothing but the timestamp would
+change, it prints `no change` and does not touch the PR. Against #660 it reported
+`40 merged, 2 draft. Not merged yet: UoC 26, UoC 27.`
 
-## How a review PR is recognised
+## How a unit and its PRs are found
 
-| Signal | Written by | Covers |
-|---|---|---|
-| `<!-- uoc-review: pr=<batch> uoc=<N> … -->` in the PR body | `uoc_review.py open` | PRs opened with the tool, whatever their branch names |
-| Head branch `<batch-branch>-uoc<N>` in the same repository | The documented recipe | PRs opened by hand |
+The batch PR's head branch is `<prefix>-base`, which gives the prefix (`--prefix` overrides it).
+A unit is any `<prefix>-uoc<N>` branch on GitHub or any PR whose head is such a branch in the
+same repository, so PRs opened by hand count too. The search walks all the repository's PRs,
+not only those newer than the batch PR: b1's unit PRs (#632–#659) predate its batch PR (#660).
+A unit may have several PRs (b1: a closed first attempt with a `UoC N/28` title, then a new
+one); the row lists all of them, oldest first, and the summary counts the newest.
 
-The search walks the repository's PRs newest first and stops at the batch PR's creation
-date, since no review PR can be older than its batch. A unit may have several review PRs
-(a closed first attempt, then a new one); the cell lists all of them, oldest first, and the
-summary counts the newest.
-
-## What each cell says
-
-A cell is `#<number> <status>`, joined with `<br>` when there are several. GitHub links `#<n>`
-by itself.
+## What each row says
 
 | Status | Meaning | Next step |
 |---|---|---|
+| `no PR yet` | A unit branch without a PR | `uoc_review.py open --uoc N` |
 | `draft` | Opened as a draft | The author marks it ready |
 | `open` | Ready, no reviewer requested, no verdict yet | Request a reviewer |
 | `in review` | A reviewer is requested and has not given a verdict | Wait for the reviewer |
-| `changes requested` | A reviewer's latest verdict asks for changes | Push fixes to the head branch |
-| `approved, to retarget` | Approved, base still `<batch>-uoc<N>-base` | `uoc_review.py retarget` |
-| `approved, ready to merge` | Approved and based on the batch branch | Merge with a merge commit |
-| `merged` | Merged; its fixes are in the batch PR | — |
+| `changes requested` | A reviewer's latest verdict asks for changes | Push fixes to the unit branch |
+| `approved` | Approved | Squash-merge it into the base |
+| `merged` | Merged into the base | — |
 | `closed` | Closed without merging | Open a new one if the unit still needs review |
 
 The review state is GitHub's `reviewDecision` where the base branch requires reviews. The
-`uoc<N>-base` branches require none, and GitHub then reports no decision at all, so the tool
+`<prefix>-base` branches require none, and GitHub then reports no decision at all, so the tool
 falls back to each reviewer's latest approving or change-requesting review. `, CI failing` or
-`, CI running` is appended from the head commit's check rollup. The
-summary line counts units by the status of their newest review PR and lists the
-*must review* units that have none yet. Units marked "upstream only" are never listed
-there: they have nothing to review.
+`, CI running` comes from the head commit's check rollup. The title comes from the newest PR,
+without the `UoC N:` prefix and the `(#PR)` suffix of a squash merge.
 
 ## Editing the description without losing someone else's edit
 
-The column and the summary are the only things rewritten. The summary lives between
-`<!-- uoc-review-status -->` and `<!-- /uoc-review-status -->` and is inserted above the
-table the first time. Just before writing, the tool fetches the description again; if
-someone edited it meanwhile, it recomputes from the new text, up to three times, then gives
-up with exit status 2 and asks for a re-run.
+Only the block between `<!-- uoc-review-status -->` and `<!-- /uoc-review-status -->` is
+rewritten. The first run puts it right under the `## Units of change` heading, or appends that
+heading when there is none. Just before writing, the tool fetches the description again; if
+someone edited it meanwhile, it recomputes from the new text, up to three times, then gives up
+with exit status 2 and asks for a re-run.
 
 The write is `PATCH /repos/<repo>/pulls/<n>` through `gh api`. `gh pr edit` cannot be used on
 `greengage_sync`: it fails with a Projects (classic) deprecation error from GraphQL.
 
 | Problem | Cause | Fix |
 |---|---|---|
-| `the batch PR body has no unit table` | The header row lost "Unit of change" or "Review PR" | Restore the header from `pg_batch.py render`; the tool finds the table by those two names |
-| A unit shows `—` although it has a review PR | The PR was opened by hand with another branch name, from a fork, or before the batch PR existed | Add the marker line to its body, or rename the head branch |
-| `review PRs for units not in the table` | A unit number that the table does not have | Check the PR's `uoc=` marker; the batch may have been rebuilt with different numbers |
-| A hand-written note in the Review PR column disappeared | The column belongs to the tool | Put notes in the PR description's prose, not in that column |
+| `the head branch of #N is X, not <prefix>-base` | The PR is not a batch PR, or `gh` picked another repository | Pass `--repo`, or `--prefix` for an unusual head name |
+| A unit is missing | Its PR comes from a fork, or its branch has another name | Push the branch as `<prefix>-uoc<N>` to the repository |
+| A row lists a PR of an old layout | A branch name was reused (b1: #627 and #629 of the per-file layout used `uoc31`/`uoc30`) | Harmless; the newest PR decides the status |
+| A hand-written note inside the block disappeared | The block belongs to the tool | Put notes in the description's prose |
 
 ## When to run it
 
-After opening, approving, retargeting or merging any review PR, and before reporting
-review progress. It is cheap: a few paged REST calls and one GraphQL query for every
-fifty review PRs. A scheduled run keeps the column current during a long review.
+After opening, approving, merging or splitting any unit PR, and before reporting review
+progress. It is cheap: a few paged REST calls and one GraphQL query for every fifty PRs. A
+scheduled run keeps the table current during a long review.
 
 ## What not to do
 
-- Do not hand-edit the Review PR column or the status block; the next run overwrites both.
-- Do not use the column as the review record; the review PRs themselves are.
-- Do not run it against a PR that is not a batch PR; without the unit table it refuses
-  rather than guessing.
+- Do not hand-edit the table or the summary; the next run overwrites both.
+- Do not use the table as the review record; the unit PRs themselves are.
+- Do not run it with a guessed `--prefix` on a PR that is not a batch PR.
 
 See also: [greengage-uoc-review-pr](../greengage-uoc-review-pr/SKILL.md) ·
 [greengage-pg-batch](../greengage-pg-batch/SKILL.md) ·

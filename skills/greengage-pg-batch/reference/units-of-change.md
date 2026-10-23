@@ -1,6 +1,6 @@
-# Units of change: topics.json and the b1 example
+# Units of change: topics.json and the b1 result
 
-Lookup material for [greengage-pg-batch](../SKILL.md), step 5.
+Lookup material for [greengage-pg-batch](../SKILL.md), steps 5 and 6.
 
 ## topics.json
 
@@ -8,28 +8,38 @@ Lookup material for [greengage-pg-batch](../SKILL.md), step 5.
 {"topics": [
    {"slug": "memoize-rename",
     "title": "Result Cache renamed to Memoize",
-    "summary": "Upstream renamed the Result Cache plan node to Memoize (node, GUC enable_memoize, EXPLAIN output, tests). Greengage-only references follow: plan walkers, cdbplan/cdbllize, targeted dispatch, memquota, unsynced GUC list, ORCA answer files.",
     "commits": ["83f4fcc6550"],
     "paths": ["src/backend/executor/nodeMemoize.c", "re:^src/test/regress/(sql|expected)/(memoize|resultcache)",
               "src/backend/cdb/cdbplan.c", "src/include/utils/unsync_guc_name.h"],
-    "aliases": [],
-    "notes": []}],
+    "aliases": []},
+   {"slug": "hot-chain-backport",
+    "title": "Backport: fix HOT chain corruption during pruning (bug #17255)",
+    "commits": [], "paths": []}],
  "module_buckets": [["re:^src/backend/regex/", "regex", "Regular expressions"],
                     ["re:.", "misc", "Other changes"]]}
 ```
 
 | Field | Meaning |
 |---|---|
-| `slug` | Unit id: commit trailers (`UoC: <slug>`), review branch names, the PR table |
-| `title` | One line; becomes `UoC N/M: <title>` |
-| `summary` | The PR table cell: what upstream changed, then what Greengage had to do about it |
-| `commits` | Upstream commits that define the unit. A commit listed by several units is tagged `(main change: UoC <slug>)` in the others |
-| `paths` | Files of the unit: exact paths, globs, or `re:<regex>`. The first topic that matches wins |
-| `aliases` | Other `UoC:` trailer values that mean this unit (b1 renamed `alter-table-set-am` and `relkind-errmsg` into `alter-table`) |
-| `notes` | Bullets for the unit commit message |
+| `slug` | Unit id: commit trailers (`UoC: <slug>`), split.json entries, `msg/<slug>.txt` |
+| `title` | One line; the unit commit becomes `UoC N: <title>` from `msg/<slug>.txt`, which may refine it |
+| `commits` | Upstream commits that define the unit. The unit **claims** them for the split; a commit listed by several topics is claimed by all of them unless split.json `primary` pins it |
+| `paths` | Files the unit owns in the per-file cut: exact paths, globs, or `re:<regex>`. The first matching topic wins |
+| `aliases` | Other `UoC:` trailer values that mean this unit |
 | `module_buckets` | `[pattern, slug, title]` fallbacks, tried in order after the topics |
 
-## How assign places a file
+The topic order is the unit order: `assign` sends an operation with several candidate units to
+the earliest, and new unit numbers follow it. Put the independent-fix units (no commits; their
+operations arrive through split.json `redirect`) last.
+
+## What a unit claims
+
+`uoc_split.py` turns the topics and `uocs.json` into claims: a unit claims the commits its topic
+lists, plus every upstream commit that touches its per-file files and that no topic lists (the
+commits `pg_batch.py` would list without "main change"). An operation caused by a commit goes
+to a unit claiming it. A commit nobody claims leaves its operations with the per-file owner.
+
+## How pg_batch.py assign places a file (the per-file owner)
 
 First match wins:
 
@@ -40,59 +50,78 @@ First match wins:
 5. The `UoC:` trailer, for a file upstream also touched.
 6. The first matching `module_buckets` entry; otherwise `misc`.
 
-`assign` lists every upstream commit under each unit whose files it touches. Commits that touch
-only files Greengage removed (docs, translations) are reported as *unlisted* and go into a
-collapsed list under the PR table.
-
 ## Grouping heuristics that worked in b1
 
-- Start from the inventory: each day-1 commit (R1) and each R2 file usually anchors a unit
-  of its own — an upstream API change plus every Greengage re-graft it forced.
-- Give the re-grafts of a rename to the rename's unit, even where they live in Greengage-only
-  files (`cdbplan.c`, `memquota.c`, the unsynced GUC list for Memoize).
-- Then cut the rest by subsystem, at a size one reviewer can own in a sitting.
-- Keep upstream-only areas (regex, ECPG, contrib, docs, encoding tables) as their own units;
-  they become empty commits and need no review PR.
-- Put regenerated answer files with the unit whose behaviour change they record when that is
-  one unit; otherwise collect them in a tests unit (b1: `regress-tests`, 105 files).
-- Write every b1 topic with explicit `paths`: all 953 files were placed by a path match, so no
-  file's unit depended on the fallback order.
+- Each day-1 commit and each upstream deletion of a Greengage-modified file anchors a unit of
+  its own: an upstream API change plus every Greengage re-graft it forced.
+- Give a rename's re-grafts to the rename's unit, even in Greengage-only files (`cdbplan.c`,
+  `memquota.c`, the unsynced GUC list for Memoize). The per-operation split does this by
+  itself through `tokens2` once the rename's commit is in the topic's `commits`.
+- Cut the rest by upstream change, not by subsystem: b1's subsystem units (`planner`,
+  `executor`, `wal-xact`, `pg-dump`, `sql-functions-types`, `commands-parser`, `alter-table`)
+  were each split into three after review started, because one reviewer could not own
+  unrelated changes in one sitting.
+- Upstream-only areas (regex, ECPG, contrib, docs, encoding tables) stay topics so their commits
+  have a home; they have no Greengage operation and get no branch.
+- Answer files: the operations a `testL` cause ties to an upstream test go with that test's
+  unit; Greengage regenerations stay in one tests unit (b1: `regress-tests`).
 
-## b1: 31 units for 468 commits
+## Splitting a unit whose PR is already open
 
-`sync-15x-b1`, in tier order. *Files* is the unit's share of `next..sync-15x-b1-raw`; *GG files*
-is how many of them the unit commit changes after the merge (0 means an empty commit).
+The first part keeps the unit's number (and so its branch and PR); the other parts take the next
+free numbers in `numbers.json`. Write the parts as topics in place of the parent, place the
+operations no commit ties to a part with `overrides`, rebuild only the parts' branches
+(`branches --only`), and bring the review fixes from the parent's branch into the parts whose
+files they touch. Check: merging the parts' branches gives exactly the parent's old branch tree.
 
-| # | Slug | Title | Files | Upstream commits | GG files | Tier (rules) |
-|---|---|---|---|---|---|---|
-| 1 | `memoize-rename` | Result Cache renamed to Memoize | 15 | 2 | 11 | must review (R6, R7) |
-| 2 | `catalog-pin-oid-range` | Pinned objects: OID range test instead of pg_depend PIN entries | 11 | 11 | 9 | must review (R1, R3, R4, R5, R6, R7, R8) |
-| 3 | `catalog-declare-index` | Catalog headers: index OID macro in DECLARE_INDEX | 91 | 19 | 24 | must review (R3, R4, R7) |
-| 4 | `alter-table` | ALTER TABLE: relkind error messages, SET ACCESS METHOD, toast rewrite | 5 | 14 | 8 | must review (R1, R3, R5, R6, R7) |
-| 5 | `conflicting-options-errors` | Option parsing: errorConflictingDefElem() | 11 | 7 | 1 | must review (R1, R7) |
-| 6 | `planner` | Planner: parallel DISTINCT, NestPath/SeqScan structs, pruning, costing | 24 | 22 | 12 | must review (R1, R3, R6, R7) |
-| 7 | `executor` | Executor: aggregate cleanup, hash memory limit, Datum sort | 24 | 18 | 7 | must review (R1, R3, R4, R6, R7) |
-| 8 | `node-support` | Node support functions, Greengage serializers, ORCA translator | 13 | 15 | 7 | must review (R1, R6, R7) |
-| 9 | `buffile-fileset` | BufFile: sharedfileset split into fileset | 10 | 5 | 5 | must review (R7) |
-| 10 | `relation-get-smgr` | RelationOpenSmgr() replaced by RelationGetSmgr() | 9 | 13 | 4 | must review (R3, R4) |
-| 11 | `process-startup` | Process startup/shutdown rework, shared memory size | 24 | 37 | 9 | must review (R4, R6, R7) |
-| 12 | `pgstat` | Statistics collector changes | 5 | 10 | 1 | must review (R1, R4, R6) |
-| 13 | `analyze-partitioned-revert` | Revert of autoanalyze for partitioned tables | 2 | 8 | 2 | must review (R1, R4) |
-| 14 | `wal-xact` | WAL and transactions: FPW compression, recovery refactoring | 17 | 35 | 4 | must review (R1, R4, R5, R6) |
-| 15 | `logical-replication-2pc` | Logical replication: two-phase commit, streaming | 60 | 42 | 2 | must review (R3, R4) |
-| 16 | `pg-dump` | pg_dump: public schema ownership, partition triggers | 10 | 15 | 5 | must review (R1, R3, R4, R5, R6) |
-| 17 | `client-tools` | Client utilities | 78 | 71 | 8 | must review (R3, R4) |
-| 18 | `tap-postgresnode` | TAP framework: PostgresNode->new() | 45 | 16 | 7 | must review (R4) |
-| 19 | `sql-functions-types` | SQL functions, data types, backend utilities | 38 | 38 | 3 | must review (R1) |
-| 20 | `storage-locking` | Storage, locking and invalidation | 24 | 27 | 5 | must review (R4, R7) |
-| 21 | `commands-parser` | Commands, parser and rewriter | 45 | 40 | 3 | must review (R1, R5) |
-| 22 | `access-methods` | Index and table access methods | 22 | 14 | 2 | must review (R3, R4, R5, R7) |
-| 23 | `regress-tests` | Regression and isolation test changes | 105 | 62 | 45 | must review (R8) |
-| 24 | `build-system` | Build system and portability | 30 | 47 | 3 | must review (R1) |
-| 25 | `libpq-auth` | libpq and authentication | 36 | 20 | 2 | no review |
-| 26 | `regex` | Regular expressions | 15 | 13 | 0 | no review |
-| 27 | `plpgsql` | PL/pgSQL | 11 | 4 | 1 | no review |
-| 28 | `ecpg` | ECPG | 17 | 6 | 0 | no review |
-| 29 | `contrib` | contrib modules | 44 | 26 | 0 | no review |
-| 30 | `docs` | Documentation | 26 | 29 | 0 | no review |
-| 31 | `encoding-unicode` | Encoding conversions and Unicode tables | 86 | 10 | 0 | merge automatically |
+## b1: 42 units for 468 commits
+
+`sync-15x-b1`, by number. Units 1–25 are the 31 per-file units of #626 after the re-split
+(`access-methods` and five upstream-only units had no operation left); seven of them now hold
+the first part of a unit split during review, whose other parts are 29–42. Units 26–28 are the
+independent fixes.
+
+| # | Slug | Title | Origin |
+|---|---|---|---|
+| 1 | `memoize-rename` | Result Cache renamed to Memoize | |
+| 2 | `catalog-pin-oid-range` | Pinned objects: OID range test instead of pg_depend PIN entries | |
+| 3 | `catalog-declare-index` | Index OID macro argument to DECLARE_INDEX | |
+| 4 | `alter-table-set-am` | ALTER TABLE SET ACCESS METHOD | split from `alter-table` |
+| 5 | `conflicting-options-errors` | Report "conflicting or redundant options" via errorConflictingDefElem | |
+| 6 | `parallel-distinct` | Parallel DISTINCT | split from `planner` |
+| 7 | `hash-memory-limit` | Hash memory limit: get_hash_memory_limit() | split from `executor` |
+| 8 | `node-support` | Node support: PublicationTable node, COPY_POINTER_FIELD size check | |
+| 9 | `buffile-fileset` | BufFile: FileSet split out of SharedFileSet | |
+| 10 | `relation-get-smgr` | RelationOpenSmgr() replaced by RelationGetSmgr() | |
+| 11 | `process-startup` | Process startup/shutdown rework and shared_memory_size | |
+| 12 | `pgstat` | pgstat: bgwriter and checkpointer statistics split | |
+| 13 | `analyze-partitioned-revert` | Revert autoanalyze of partitioned tables | |
+| 14 | `fpw-compression` | WAL full-page image compression: LZ4, wal_compression enum | split from `wal-xact` |
+| 15 | `logical-replication-2pc` | Logical replication: two-phase commit for subscriptions | |
+| 16 | `pg-dump-public-schema` | pg_dump: public schema ownership, comment and ACL | split from `pg-dump` |
+| 17 | `client-tools` | Client tools: integer option parsing, pg_resetwal -u, pg_ctl commands | |
+| 18 | `tap-postgresnode` | TAP: unify PostgresNode new() and get_new_node() | |
+| 19 | `record-hashing` | Anonymous record types no longer hashable | split from `sql-functions-types` |
+| 20 | `storage-locking` | Locking, visibility horizon and invalidation refactors | |
+| 21 | `partition-triggers` | Triggers on partitions: cloned firing state, ALTER TRIGGER RENAME | split from `commands-parser` |
+| 22 | `regress-tests` | Regression answer files regenerated for the batch | |
+| 23 | `build-system` | Version 15devel and world-bin make targets | |
+| 24 | `libpq-auth` | libpq: generic SASL interface and OOM-safe error messages | |
+| 25 | `plpgsql` | PL/pgSQL: shorter "returned more than one row" errors | |
+| 26 | `policy-heal` | Greengage fix: heal a transiently stale ENTRY distribution policy | independent fix |
+| 27 | `hot-chain-backport` | Backport: fix HOT chain corruption during pruning (bug #17255) | independent fix |
+| 28 | `windowdef-binary` | Greengage fix: binary node serialization for WindowDef | independent fix |
+| 29 | `relkind-errmsg` | Error messages about mismatching relkind | split from `alter-table` |
+| 30 | `toast-rewrite` | Toast rewrites in logical decoding | split from `alter-table` |
+| 31 | `path-plan-structs` | NestPath contains JoinPath, SeqScan contains Scan | split from `planner` |
+| 32 | `planner-misc` | Planner: partition scans, hashed NOT IN, smaller fixes | split from `planner` |
+| 33 | `agg-cleanup` | Aggregate code cleanup in the executor | split from `executor` |
+| 34 | `datum-sort` | Datum sorts for single-column sorts | split from `executor` |
+| 35 | `slot-invalidation` | Old-segment horizon after replication slot invalidation | split from `wal-xact` |
+| 36 | `recovery-refactor` | WAL recovery refactoring and fixes | split from `wal-xact` |
+| 37 | `pg-dump-typename-cache` | pg_dump: cached type names | split from `pg-dump` |
+| 38 | `pg-dump-queries` | pg_dump: disabled triggers on partitions, fewer per-table queries | split from `pg-dump` |
+| 39 | `size-pretty` | pg_size_pretty: unit table, petabytes, rounding | split from `sql-functions-types` |
+| 40 | `numeric-hex` | numeric_power fixes, hex code back from src/common | split from `sql-functions-types` |
+| 41 | `matview-refresh` | REFRESH MATERIALIZED VIEW CONCURRENTLY alias ambiguity | split from `commands-parser` |
+| 42 | `extension-rewriter` | Extension membership checks and rewriter fixes | split from `commands-parser` |

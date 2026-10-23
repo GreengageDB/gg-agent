@@ -1,62 +1,80 @@
 ---
 name: greengage-pg-batch
-description: Prepare a batch of upstream PostgreSQL commits on greengage_sync for team review - picking the cut and checking it for split revert pairs, branching from next, merging with conflict markers committed, bring-up to green CI on a raw branch, units of change (UoC), review tiers from the b14-b17 rules, the batch-merge-plus-one-commit-per-unit branch, and the templated PR description. Use when asked to take the next N upstream commits into greengage_sync, or to prepare a sync-<major>x-b<N> batch PR.
+description: Prepare a batch of upstream PostgreSQL commits on greengage_sync for team review - picking the cut and checking split revert pairs, merging with conflict markers committed, bring-up on a raw branch, units of change (UoC) split per operation by conflict-region, bring-up-commit, identifier and answer-file causes, diff minimisation against both parents, independence and completeness checks, one PR per unit into <prefix>-base. Use when asked to take the next N upstream commits into greengage_sync, to split a batch into units, or to prepare a sync-<major>x-b<N> batch PR.
 license: Apache-2.0
 metadata:
   author: GreengageDB
-  version: "0.1.0"
+  version: "0.2.0"
   greengageVersion: "8.x campaign line in greengage_sync (next and the sync-<major>x-b<N> batch branches)"
 ---
 
 # Preparing an upstream PostgreSQL batch for review
 
-A **batch PR** brings a slice of upstream PostgreSQL history into `greengage_sync` `next`
-and is shaped so the team can review it unit by unit. The reference is
-[GreengageDB/greengage_sync#626](https://github.com/GreengageDB/greengage_sync/pull/626)
-(`sync-15x-b1`): 468 upstream commits `e1c1c30f635..3b231596ccf`, 151 conflicted files, 12
-real bugs found during bring-up, 31 units of change. Everything here was done on that batch
-and every command was run against it.
+A **batch** brings a slice of upstream PostgreSQL history into `greengage_sync` `next`, shaped
+so the team can review it unit by unit. The reference is `sync-15x-b1`: 468 upstream commits
+`e1c1c30f635..3b231596ccf`, 101 files committed with conflict markers, 12 real bugs found
+during bring-up. It was first split per file into 31 units
+([greengage_sync#626](https://github.com/GreengageDB/greengage_sync/pull/626)), then re-split
+per operation into 42 units, each reviewed in its own PR, with
+[greengage_sync#660](https://github.com/GreengageDB/greengage_sync/pull/660) as the batch PR.
+This skill is the second way. Every command below was run against b1.
 
-This skill is the pipeline around the merge. The merge itself — resolving a conflict
-semantically, re-grafting Greengage logic, the compile → regress → CI ladder — belongs to
-[greengage-pg-merge](../greengage-pg-merge/SKILL.md); load it before step 4. Review PRs
-for single units are [greengage-uoc-review-pr](../greengage-uoc-review-pr/SKILL.md), and
-their status in the batch PR is [greengage-uoc-review-status](../greengage-uoc-review-status/SKILL.md).
+The merge itself — resolving a conflict semantically, re-grafting Greengage logic, the
+compile → regress → CI ladder — belongs to [greengage-pg-merge](../greengage-pg-merge/SKILL.md);
+load it before step 4. The unit PRs are [greengage-uoc-review-pr](../greengage-uoc-review-pr/SKILL.md),
+their table in the batch PR is [greengage-uoc-review-status](../greengage-uoc-review-status/SKILL.md).
 
-The scripts are `${CLAUDE_PLUGIN_ROOT}/scripts/pg_batch.py` (git only, run from the
-`greengage_sync` checkout or with `-C`) and `${CLAUDE_PLUGIN_ROOT}/scripts/uoc_review.py`
-(GitHub API through `gh`). Below, `pg_batch.py` means the first one.
+Scripts, all under `${CLAUDE_PLUGIN_ROOT}/scripts/`: `pg_batch.py` (cut, merge inventory,
+per-file facts), `uoc_split.py` (the per-operation split and the unit branches), both git only
+and run from the `greengage_sync` checkout or with `-C`; `uoc_review.py` (unit PRs, through
+`gh`); `uoc_sync_test.sh` and `sync-uoc-test.yml` (the test branch).
 
-## The deliverable is a review layout, not a merge
-
-Two branches end with the **same tree**. Only the first is the PR:
+## The deliverable is independent unit PRs, not one merge
 
 ```
-sync-15x-b1      next ── Merge upstream PostgreSQL 3b231596ccf ── UoC 1/31 ── UoC 2/31 ── … ── UoC 31/31
-                          (468 commits in, 101 files with markers)   (resolutions + fixes of one unit each)
-sync-15x-b1-raw  next ── the same merge ── 36 resolution and fix commits in bring-up order
+sync-15x-b1-base   next ── Merge upstream PostgreSQL 3b231596ccf    (DIRTY: markers committed)
+sync-15x-b1-uocN                      └── UoC N: <title>             (only unit N's operations)
+sync-15x-b1-test                      └── base + every uocN merged   (CI runs here, PR #631)
+sync-15x-b1-raw    next ── the same merge ── 36 bring-up commits     (RAW: green; never merged)
 ```
 
 | Name | What it is |
 |---|---|
-| `sync-<major>x-b<N>` | The PR head, in the review layout: the batch merge, then one commit per unit |
-| `sync-<major>x-b<N>-raw` | The bring-up history, kept for provenance; never merged |
-| `sync-<major>x-b<N>-dirty` (tag) | The merge commit with markers, parent of every raw commit |
-| `…-uoc<N>-base`, `…-uoc<N>` | Review PR branches for unit N ([greengage-uoc-review-pr](../greengage-uoc-review-pr/SKILL.md)) |
+| `<prefix>-base` | DIRTY, the merge commit with markers; head of the batch PR into `next` |
+| `<prefix>-uoc<N>` | One commit, parent DIRTY: the conflict resolutions and fixes of unit N only; its PR targets `<prefix>-base` |
+| `<prefix>-test` | Octopus merge of the base and every unit branch; its PR into the base runs CI on the combined tree |
+| `<prefix>-raw` | The bring-up history, kept for provenance and as the source of every operation's cause |
+| `<prefix>-dirty` (tag) | DIRTY on the raw branch |
 
-The merge commit carries the conflict markers on purpose. That is the team's
-committed-markers workflow ([greengage-pg-merge](../greengage-pg-merge/SKILL.md), "Two
-workflows"): every resolution diff then shows both sides and the chosen result. The price is
-that the merge and the unit commits before the tip do not build — bisect `next` with
-`--first-parent`, and merge the batch PR **with a merge commit**, never squash or rebase,
-or the upstream ancestry is lost. `next` requires two approvals; you never merge it.
+Every unit changes only its own lines, so the unit PRs merge cleanly **in any order** and all
+of them together give RAW's tree. The base does not build until all are merged; CI validates
+the test branch instead. The batch PR is merged into `next` **with a merge commit**, after the
+last unit PR, never squashed or rebased, or the upstream ancestry is lost. `next` requires two
+approvals; you never merge it.
+
+## A unit is one upstream change with everything it caused, not a set of files
+
+The per-file split gave each file to one "main" unit. The Greengage changes caused by one
+upstream commit then landed in other units (`functioncmds.c` from the pinned-objects change
+in option parsing, `outfast.c` from Memoize in node support), and units carried conflicts
+that were not theirs (`pg_depend.c` in the pinned objects). Split by **operation** — one
+difflib opcode of a file's DIRTY → RAW change — instead:
+
+- A unit is one upstream change (one or a few tightly related commits) plus **every**
+  Greengage change it caused: conflict resolutions, Greengage-only adaptations, answer files.
+- A fix caused by an upstream commit belongs to that commit's unit ("Fix build"; `gpstart`
+  waiting after `7ff23c6d277` lets the checkpointer run during crash recovery).
+- A Greengage fix that the batch did not cause and CI merely exposed gets **its own unit at
+  the end**: b1 had three (HOT-chain backport of PG bug #17255, healing a transiently stale
+  ENTRY policy, binary serialization of `WindowDef`).
+- The number of units is not fixed. A topic with no Greengage operation gets no branch (b1:
+  `regex`, `ecpg`, `contrib`, `docs`, `encoding-unicode`, and `access-methods` once emptied).
 
 ## 1. Pick the batch from the request, then confirm it
 
-Translate the request into a bound: "the next 200 commits" (`--count 200`), "up to
-`<hash>`" (`--until`), "everything before 2021-10-01" (`--before`). The upstream bound is the
-pinned target of the major (PG15: `adadae45816`, see greengage-pg-merge); a batch never
-crosses it.
+Translate the request into a bound: "the next 200 commits" (`--count 200`), "up to `<hash>`"
+(`--until`), "everything before 2021-10-01" (`--before`). The upstream bound is the pinned
+target of the major (PG15: `adadae45816`, see greengage-pg-merge); a batch never crosses it.
 
 ```bash
 git fetch origin next && git fetch pg                     # pg = github.com/postgres/postgres
@@ -64,36 +82,20 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pg_batch.py select \
     --source origin/next --upstream adadae45816 --count 200 --out batch.json
 ```
 
-`select` prints the cut with its neighbours and exits **1** when the cut splits a revert
-pair — the batch has a commit whose revert lies after the cut. Move the cut to the printed
-*closing cut* (includes the revert) or *earlier cut* (excludes the reverted commit); do not
-merge a change you know upstream takes back. On `next` before b1, `--count 200` exits 1:
-`6a2c532c223` (disable the pg_receivewal ZLIB TAP tests on Windows) is reverted by
-`0b8ea707580` 31 commits later. b1 took 468 commits instead,
-which closes every revert pair and the `shared_memory_size` series; batch 2 starts at the
-Value-node removal (`639a86e36aa`).
+`select` exits **1** when the cut splits a revert pair: move the cut to the printed *closing
+cut* (includes the revert) or *earlier cut* (excludes the reverted commit). On `next` before
+b1, `--count 200` exits 1: `6a2c532c223` is reverted by `0b8ea707580` 31 commits later. b1
+took 468 commits, closing every revert pair and the `shared_memory_size` series. `select`
+also lists **follow-ups after the cut** (b1: `ff9f111bce2` fixes `515e3d84a0b`); record them
+for the next batch, and run the lookahead gate of greengage-pg-merge for reverted features.
 
-`select` also lists **follow-ups after the cut** — later upstream commits that cite a batch
-commit. Record them in the PR's follow-ups: the next batch applies them on top (b1:
-`ff9f111bce2` fixes `515e3d84a0b`, and Greengage already had it as a backport, so the next
-batch applies it twice). For features reverted before the release tag, run the lookahead
-gate in [greengage-pg-merge](../greengage-pg-merge/SKILL.md) as well.
+**Confirm the batch with the user before merging** — count, first and last commit, and why
+the cut sits there. b1's size was picked without asking; the user expected about 200.
 
-**Confirm the batch with the user before merging** — count, first and last commit, and
-why the cut sits there. b1's size was picked without asking; the user expected about 200.
-
-## 2. Branch from the source
+## 2. Branch from the source, 3. merge with the markers committed
 
 ```bash
-git worktree add -b sync-15x-b2 ../gpdb-15b2 origin/next
-```
-
-The source is `next` unless the request names another branch; the PR's base is the
-source. Do not start from `8.x`: when b1 was cut, `8.x` was still at the b14 level.
-
-## 3. Merge with the markers committed
-
-```bash
+git worktree add -b sync-15x-b2 ../gpdb-15b2 origin/next     # source: next, never 8.x
 cd ../gpdb-15b2
 git -c merge.conflictStyle=zdiff3 merge --no-commit --no-ff <cut>
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pg_batch.py inventory HEAD <cut> --json ../b2/inv.json --apply .
@@ -101,152 +103,194 @@ git add -A && git commit -m "Merge upstream PostgreSQL <cut> into sync-15x-b2"
 git tag sync-15x-b2-dirty
 ```
 
-`inventory` replays the merge (`git merge-tree --write-tree`, git ≥ 2.38) and sorts every
-hunk: **AUTO** (Greengage deleted the file, copyright header, a whitespace-only side — `--apply`
-writes these), **REGEN** (expected output and generated files: do not hand-merge, regenerate
-after the build) and **RESOLVE**. It also prints the two lists that make a unit *must review*
-whatever its resolution looks like: upstream deleting or moving a file Greengage modifies
-(R2), and the **day-1 commits** that overlap Greengage-heavy files most (R1). Resolve those
-first. b1: 151 files — 50 AUTO, 14 REGEN, 87 RESOLVE with 197 hunks.
+`inventory` replays the merge (`git merge-tree --write-tree`, git ≥ 2.38) and sorts every hunk:
+**AUTO** (Greengage deleted the file, copyright header, whitespace-only side — `--apply`
+writes these), **REGEN** (expected output and generated files: regenerate after the build)
+and **RESOLVE**. It also lists upstream deletions or moves of Greengage-modified files and the
+**day-1 commits** overlapping Greengage-heavy files most; resolve those first. The markers stay
+committed on purpose: every resolution diff then shows both sides and the chosen result.
 
 ## 4. Resolve and bring up on the raw history
 
-Work on `sync-15x-b2` itself and open a **draft PR** against the source as soon as the tree
-builds: CI only runs on pull requests ([greengage-ci](../greengage-ci/SKILL.md)). Resolve
-by [greengage-pg-merge](../greengage-pg-merge/SKILL.md) — its rules, its commit message
-template, its phase ladder — and add three trailers to every commit:
+Resolve by [greengage-pg-merge](../greengage-pg-merge/SKILL.md) on the branch and open a
+**draft PR** against the source as soon as the tree builds: CI only runs on pull requests.
+Give every commit three trailers; the split reads them:
 
 ```
-Resolve conflicts in the executor
-
-<numbered decisions, as in the greengage-pg-merge template>
-
 UoC: executor                      # the unit this commit belongs to
-Upstream: 83f4fcc6550 28d936031a8  # the upstream commits that collided
+Upstream: 83f4fcc6550 28d936031a8  # the upstream commits that caused it
 Kind: resolve                      # resolve | bring-up | build-fix | answer-files
 ```
 
-The trailers are what step 5 reads. `UoC:` places files that no topic claims (Greengage-only
-files a fix touched) and is required for them — `series` refuses with `cannot place <path>
-(bring-up commit …)` otherwise. `Kind: build-fix` keeps a pure compile fix out of rule R7. A
-commit may span several units; `series` splits it by file.
-
-CI loop facts from b1:
-
-| Fact | Consequence |
+| CI fact from b1 | Consequence |
 |---|---|
-| A push cancels the in-flight run of the same PR; marking ready or editing the body starts none | Push to re-run; read the conclusion before triaging — `cancelled` is not red |
+| A push cancels the in-flight run of the same PR; editing the body starts none | Read the conclusion first — `cancelled` is not red |
 | `gh run view --job <id> --log` returned an empty file | `gh api repos/GreengageDB/greengage_sync/actions/jobs/<id>/logs`, then `grep -a 'DIFF FILE:'` |
-| Known flakes, unchanged by the batch: contrib `ltree` `siglen=8168` "index row requires 8312 bytes", `bfv_partition_plans` (JIT) `Max (segment N)`, isolation2 `fsync_ao` | `gh run rerun <run> --failed`; anything else is real until a rerun says otherwise |
-| JIT results carry `Settings: jit=…` lines | Regenerate answer files from non-JIT runs only, through [greengage-answer-files](../greengage-answer-files/SKILL.md) |
-| Three of the 12 bugs were pre-existing on `next` (HOT-chain pruning corruption, PG bug #17255; a relcache policy race; `pg_upgrade` dropping `PUBLIC`'s rights on schema `public`) | Fix them in the batch, with a backport where upstream has one, and say "pre-existing" in the PR |
+| Known flakes: contrib `ltree` `siglen=8168`, `bfv_partition_plans` (JIT) `Max (segment N)`, isolation2 `fsync_ao` | `gh run rerun <run> --failed`; anything else is real until a rerun says otherwise |
+| JIT results carry `Settings: jit=…` lines | Regenerate answer files from non-JIT runs only ([greengage-answer-files](../greengage-answer-files/SKILL.md)) |
+| Three of the 12 bugs were pre-existing on `next` | Fix them in the batch, as units of their own, and say "pre-existing" in the PR |
 
-When CI is green, push the same commits as `sync-15x-b2-raw`. That branch is never rebuilt.
+When CI is green, push the same commits as `sync-15x-b2-raw`. That branch is never rebuilt:
+it is the evidence the split reads.
 
-## 5. Group the changes into units of change
+## 5. First cut: topics and the per-file owner
 
-A unit is what one reviewer can own: an upstream API change together with its Greengage
-re-grafts (`memoize-rename`, `catalog-declare-index`), a subsystem (`planner`, `pg-dump`,
-`tap-postgresnode`), or an upstream-only area (`regex`, `docs`). b1 had 31 units for 953
-changed files. Write `topics.json` — format, assignment order and the b1 units are in
-[reference/units-of-change.md](reference/units-of-change.md) — then:
+Write `topics.json` — the units in review order, each with the upstream commits that define
+it and its file paths; format and heuristics in [reference/units-of-change.md](reference/units-of-change.md):
 
 ```bash
-B=../b2; P=${CLAUDE_PLUGIN_ROOT}/scripts/pg_batch.py
+B=../b2; P=${CLAUDE_PLUGIN_ROOT}/scripts/pg_batch.py; S=${CLAUDE_PLUGIN_ROOT}/scripts/uoc_split.py
 python3 $P facts sync-15x-b2-dirty^1 <cut> sync-15x-b2-dirty sync-15x-b2-raw --inventory $B/inv.json --out $B/facts.json
 python3 $P assign $B/facts.json $B/topics.json --out $B/uocs.json
-python3 $P classify $B/facts.json $B/uocs.json --out $B/tiers.json
 ```
 
-Run them from the checkout (or pass `-C`), and **do not pipe them through `tail`**: the pipe
-hides the exit status, and in b1 a failed `classify` left a stale `tiers.json` behind that way.
-`assign` must report no files falling through to `misc`. Re-run all three whenever RAW moves.
+`assign` gives each file one owner. That owner is only the **fallback** of the operations
+nothing else places; `assign` must still report no file falling through to `misc`. Add the
+independent-fix units as topics with no commits. `classify` (rules R1–R8,
+[reference/review-rules.md](reference/review-rules.md)) is an optional per-file hint for where
+reviewers should look first; do not copy its flags into unit descriptions — in b1 they misfired.
+Do not pipe these commands through `tail`: the pipe hides a failed exit status.
 
-## 6. Review tiers come from per-file rules
-
-`classify` gives each unit **must review**, **no review** or **merge automatically** from
-rules R1–R8 of the b14–b17 review triage (607 PRs). Definitions and thresholds are in
-[reference/review-rules.md](reference/review-rules.md). Two facts govern how to read them:
-
-- **The rules are evaluated per file.** Their thresholds were fitted per PR, and the median
-  PR touched one file. Aggregated per unit, every unit of b1 came out *must review*; per
-  file, b1 is 24 must review, 6 no review, 1 merge automatically, and each reason names the
-  files that tripped it.
-- **A tier is a recommendation to the team, not a gate.** Every unit still passes CI, and
-  "no review" means only that b14–b17 found no defect in that class.
-
-## 7. Rebuild the review branch and prove it
+## 6. Give every operation a unit
 
 ```bash
-git worktree add --detach ../gpdb-15b2-series sync-15x-b2-raw
-python3 $P series $B/facts.json $B/uocs.json $B/tiers.json --worktree ../gpdb-15b2-series \
-    --branch sync-15x-b2-review --pr-branch sync-15x-b2 --out $B/series.json
-python3 $P verify $B/facts.json $B/series.json
+python3 $S --dir $B causes      # b1: 190 files, 4039 operations, 527 in conflict regions; ~1 min
+python3 $S --dir $B assign      # fast: re-run after every split.json edit
+python3 $S --dir $B review --how raw,tokens2,testL     # read the moves
 ```
 
-The PR branch is checked out in the bring-up worktree, so build on a temporary branch and
-name the PR branch with `--pr-branch`: the merge message and the PR text use that name. (b1
-built on a scratch name without it, and the scratch name ended up in the merge message.)
+`causes` finds four kinds of evidence; `assign` uses them in this order:
 
-`series` re-creates the merge with DIRTY's tree and parents, then commits each unit in
-tier order: the net change of the unit's files from the merge to RAW, a message with the
-summary, review status, upstream commits and the bring-up commits it squashes
-(`Raw-commit:` trailers). A unit with no Greengage change is an **empty commit** that only
-records it — b1 had five (`regex`, `ecpg`, `contrib`, `docs`, `encoding-unicode`). It
-refuses unless the tip tree equals RAW. `verify` re-checks independently: merge tree and
-parents, one owner per file, every file at RAW's content, every bring-up commit listed.
+| Placement (`how`) | Evidence | Rule |
+|---|---|---|
+| `region` | The operation touches a conflict region. Its theirs section is verbatim upstream text: located in CUT's file, `git log -L` over it (plus a line each side, for pure deletions) in `<mbase>..<cut>` names the commits | A region is atomic: it goes to the units claiming those commits |
+| `raw` | `git log -L` over the operation's final lines on the raw history names the bring-up commit; if nothing, the only bring-up commit that touched the file | Only through split.json `redirect`: independent fixes to their units, build fixes to the unit of the commit they follow |
+| `tokens2` | The operation removes identifier X and adds Y, and one upstream commit removed X **and** added Y (rare tokens weigh more) | A rename. A one-sided match is noise and is never used |
+| `testL` | Answer files: the upstream file (the planner `.out` for `_optimizer.out`) is blamed over the batch and aligned with DIRTY | A replacement goes to the commit that wrote **at least half** of the replaced lines, an insertion to the commit that wrote the line before it; otherwise it is a Greengage regeneration |
+| `none` | Nothing | Stays with the per-file owner |
 
-Then push, after the user agrees to the force-push, and move the bring-up worktree onto the
-new head (same tree, so nothing in it changes):
+Candidates are the units claiming the cause commits. If the per-file owner is among them the
+operation stays (fewer moves); otherwise it goes to the earliest candidate. Answer-file
+operations left in place follow a `testL` neighbour in the same result set or within two lines
+(`group`); an `_optimizer.out` operation follows the one at the same place of the `.out`
+(`mirror`). Renames and regions pull no neighbours: they would drag in header widths and
+foreign comments. b1: 215 of 4039 operations left their per-file unit; 59 needed an override.
+
+Manual decisions go into `$B/split.json` ([reference/split-config.md](reference/split-config.md)):
+`overrides` (`"path:DIRTY line": slug`), `redirect`, `primary` for a commit several units claim
+when completeness depends on it (b1: `d68a0039121` → storage-locking). Overrides are needed
+where the rules cannot see the cause: a comment mixing a rename with `get_hash_memory_limit`,
+a row moved in sorted output (`rangefuncs_cdb.out`), an adaptation to a removed identifier
+outside any conflict (`bgwriterLaunched`, `InitBufferPoolBackend`), a declaration a moved
+region needs (`recursive` in `analyze.c`). `assign` exits 1 when an override matches no
+operation — DIRTY line numbers are their keys.
+
+## 7. Minimise the diff against both parents
+
+- Judge minimality against **both parents**: Greengage before the merge (`<dirty>^1`) and
+  upstream (`<cut>`). The diff from DIRTY says nothing: theirs always follows ours inside the
+  markers, so "take upstream" looks like a reordering there.
+- Upstream code stays where upstream put it. A Greengage block stays one contiguous insertion
+  at its old anchor (`varsup.c`: `SetNextObjectId`/`StopGeneratingPinnedObjectIds` right after
+  `GetNewObjectId`, the `AdvanceObjectId…` block after them).
+- Do not reorder functions or lines without a cause; keep sorted lists sorted. Copy upstream
+  comments into Greengage files verbatim (`pg_magic_oid.h`); change a GPDB note minimally.
+- Do not change values that already passed the tests. Put Greengage-only decisions
+  (`nextRelfilenode = FirstGenbkiObjectId`) into the unit description for review.
+- **Minimising future conflicts wins** over every other preference.
+- Measure, per conflicted file: the size of the Greengage delta against upstream before and
+  after the merge, and lines both removed and added in that delta (moves). More moves means
+  a needless reordering.
+
+A minimisation changes RAW's content: write it as an `edits` entry in split.json (exact
+`old`/`new` text, applied from one unit on), not as a new bring-up commit.
+
+Answer files are minimised on the unit branch, after `branches`: `gpdiff_min.py -o <dir>
+<prefix>-base <prefix>-uocN` puts back every hunk gpdiff does not need and strips ignored text
+from added lines only ([minimizing regenerated files](../greengage-answer-files/reference/minimizing-regenerated-files.md)).
+On the 12 first files of b1's `regress-tests` unit it cut the changed lines from 1219 to 143.
+
+## 8. Prove the split, then read it
 
 ```bash
-git push origin sync-15x-b2-raw
-git push --force-with-lease=sync-15x-b2:<old head> origin sync-15x-b2-review:refs/heads/sync-15x-b2
-git -C ../gpdb-15b2 reset --soft sync-15x-b2-review
+python3 $S --dir $B check       # exit 1 on a conflict, a RAW mismatch or a completeness hole
 ```
 
-CI runs again on the same tree; it must be green again (rerun known flakes). **Once a review
-PR exists, never rebuild or force-push the batch branch**: review branches point at the old
-unit commits. Fixes reach the batch through review PR merges from then on.
+| Section | Proves or lists |
+|---|---|
+| `indep` | Each unit alone on DIRTY, merged one by one with `git merge-file` in unit order and in reverse: no conflict, and the result is RAW (plus edits). b1: 39 files shared by several units, 0 problems |
+| `complete` | In each unit's own tree, an identifier its own commits removed from the code base (and RAW no longer has) occurs only inside unresolved markers. b1: 0 |
+| `removed` | Operations dropping a use of a removed identifier outside that identifier's unit — override candidates |
+| `crossdeps` | One new identifier introduced by several units of a file — a use may land without its definition (b1: `live` in `tablecmds.c`) |
+| `audit` | NONE (no cause), MULTI (cause claimed by several units), RAWX (bring-up commit whose `Upstream:` names none of the unit's commits), OVR — the per-unit re-check list |
 
-## 8. Write the PR description from the template
+Then read by eye: every region move (one example per file and direction), every `raw`, every
+`tokens2`, a sample of `testL`. The unit trees do not build alone (DIRTY has markers); do not try.
+If an edit changed RAW beyond comments, build and test the final tree.
 
-The description is part generated, part written. Write the sections file from the skeleton
-in [reference/pr-template.md](reference/pr-template.md) — intro, adaptations and bugs,
-validation, follow-ups — then:
+## 9. Describe each unit
+
+`bundle` writes `$B/units/NN-slug/`: `diff.patch`, `ops.txt`, `upstream.txt` (causes with
+counts), `raw.txt` (the bring-up commit messages, the best answer to "why"). Write
+`$B/msg/<slug>.txt` from them:
+
+1. Title line, without `UoC N:` (`branches` adds it).
+2. What upstream changed, in 1–3 sentences with hashes.
+3. What Greengage did and why: Greengage-only code, each resolved conflict and which side was
+   taken, decisions upstream does not have and why they are safe.
+4. `Review focus:` — where a reviewer must look (b1 Memoize: without `T_Memoize` in
+   `outfast.c`/`readfast.c` a plan with Memoize cannot be dispatched).
+5. `Upstream:` — only the commits that actually caused work in the unit.
+6. Trailers `UoC: <slug>`, `Batch: upstream <mbase>..<cut>`, one `Raw-commit:` per bring-up commit.
+
+## 10. Branches, unit PRs, the test branch
 
 ```bash
-python3 $P render $B/facts.json $B/uocs.json $B/tiers.json $B/series.json \
-    --sections $B/sections.md --repo GreengageDB/greengage_sync --inventory $B/inv.json --out $B/body.md
-gh api -X PATCH repos/GreengageDB/greengage_sync/pulls/<n> -F body=@$B/body.md
+python3 $S --dir $B branches sync-15x-b2                 # dry run: numbers, trees, titles
+python3 $S --dir $B branches sync-15x-b2 --create --base
+git push origin sync-15x-b2-raw sync-15x-b2-base sync-15x-b2-uoc1 …     # only after the user agrees
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/uoc_review.py open --prefix sync-15x-b2 --all --dry-run
 ```
 
-`render` prints the title and generates the organisation paragraph, merge statistics, the
-unit table (Review PR column `—`), the review legend and the review-PR instructions. It exits
-1 when the body reaches GitHub's 65,536-character limit (b1: 31.6k with `--max-inline 12`).
-Edit the body with `gh api -X PATCH`, not `gh pr edit`: on `greengage_sync`, `gh pr edit`
-fails with a Projects (classic) deprecation error from GraphQL. Mark the PR ready when CI is
-green, then hand over to [greengage-uoc-review-pr](../greengage-uoc-review-pr/SKILL.md).
+Unit numbers live in `$B/numbers.json` and never change: a new or split-off unit gets the next
+free number. Authors come from the bring-up commit behind most of the unit's operations
+(`author_from` overrides). Creating branches and PRs is visible to the team: dry run first.
+
+The test branch: `git checkout -b sync-15x-b2-test sync-15x-b2-base && git merge --no-ff
+sync-15x-b2-uoc1 …`, push, open its PR into the base, and commit `sync-uoc-test.yml` to
+`.github/workflows/` **on the base**: it runs on `pull_request`, whose workflow file comes
+from the PR's merge ref (`pull_request_target` would read the default branch and never run).
+On every unit PR change it merges the unit branches the test branch lacks. Set the
+`SYNC_PUSH_TOKEN` secret, or its pushes leave the CI runs awaiting approval.
+`uoc_sync_test.sh <prefix>` does the same by hand. **Unit branches must never be force-pushed**:
+the test branch already holds their commits. Remove the workflow before the batch PR merges.
+
+Write the batch PR description from [reference/pr-template.md](reference/pr-template.md),
+fill `{Un}` with `uoc_split.py links`, and keep its unit table current with
+[greengage-uoc-review-status](../greengage-uoc-review-status/SKILL.md). Edit it with
+`gh api -X PATCH`: `gh pr edit` fails on `greengage_sync` with a Projects (classic) error.
 
 ## Failure modes
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `select` exits 1 | The cut splits a revert pair | Take the printed closing or earlier cut |
-| `inventory`: `git merge-tree … failed` | git older than 2.38 | Upgrade git; the inventory needs `--write-tree` |
-| `facts`: `DIRTY must be the merge commit with parents BASE and CUT` | BASE given as a branch that has moved since the merge | Pass the merge's own first parent, `<dirty>^1` |
-| `series`: `cannot place <path>` | A Greengage-only file changed by a commit without a `UoC:` trailer | Add the path to a topic, re-run assign and classify |
-| `series`: `does not reproduce RAW` | RAW moved after `facts`, or the build worktree was dirty | Re-run facts, assign, classify; use a fresh worktree |
-| `verify` reports mismatches | The branch was edited after `series` | Rebuild; never hand-edit the review layout |
-| Every unit is *must review* | Rules aggregated per unit, or build fixes without `Kind: build-fix` | Use `classify` as is; fix the trailers |
+| `inventory`: `git merge-tree … failed` | git older than 2.38 | Upgrade git |
+| `assign`: `N changed files have no unit` | A file whose net change BASE → RAW is empty, touched by a commit without a `UoC:` trailer | `owners` in split.json |
+| `assign`: `split.json names units that topics.json does not have` | A unit was renamed or split after the entry was written | Point the entry at the new slug or the part |
+| `assign` exits 1: overrides match no operation | DIRTY changed, or the key is not the operation's first DIRTY line | `review --all --path <file>` shows the keys |
+| `check`: `conflict in <file> merging <unit>` | Two units' operations touch adjacent lines | Override one of them into the other unit |
+| `check complete` lists a use | The fix of a removed identifier sits in another unit | Override that operation, or pin the commit with `primary` |
+| A unit PR shows changes it should not | The branch was rebuilt after review started | Never rebuild an open unit; fix on its branch |
 
 ## What not to do
 
 - Do not choose the batch size silently, and do not cross the major's pinned target.
-- Do not merge, squash or rebase the batch PR; the team merges it with a merge commit.
-- Do not rebuild or force-push the batch branch after the first review PR is open.
+- Do not split per file, and do not leave an independent Greengage fix inside an upstream unit.
+- Do not judge minimality against the merge commit with markers.
+- Do not hand-edit unit branches before review starts; change split.json and rebuild instead.
+- Do not force-push a unit branch, or rebuild one whose PR is open.
 - Do not regenerate answer files from JIT runs or from a run with a crashed segment.
-- Do not read *no review* as *no CI*: every unit is validated by the tip's CI run.
 
 See also: [greengage-pg-merge](../greengage-pg-merge/SKILL.md) ·
 [greengage-uoc-review-pr](../greengage-uoc-review-pr/SKILL.md) ·

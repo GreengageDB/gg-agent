@@ -1,135 +1,126 @@
 ---
 name: greengage-uoc-review-pr
-description: Open the review PR for one unit of change (UoC) of a greengage_sync batch PR, given the batch PR by number or URL and the unit number - the UoC N/M commit, the uoc<N>-base and uoc<N> branches, a diff of exactly that unit, refusing upstream-only units and duplicates, reviewers, and retargeting the approved PR into the batch. Use when a reviewer is assigned to a unit, when asked to open the review PR for UoC 7 of #626, or when an approved unit review must be merged back into the batch.
+description: Open and carry through the review PRs of a greengage_sync batch split into units of change (UoC) - one <prefix>-uocN -> <prefix>-base PR per unit, opening one or all with uoc_review.py, reading a unit by its description and Review focus, review fixes on the unit branch without force-push, the -test branch CI runs, squash-merging into the base, splitting a unit under review, closing the batch. Use when a reviewer is assigned to a unit, when asked to open the unit PRs of sync-15x-b2, or when a unit PR is approved.
 license: Apache-2.0
 metadata:
   author: GreengageDB
-  version: "0.1.0"
-  greengageVersion: "8.x campaign line in greengage_sync (batch PRs built by greengage-pg-batch)"
+  version: "0.2.0"
+  greengageVersion: "8.x campaign line in greengage_sync (batches split by greengage-pg-batch)"
 ---
 
-# Opening the review PR for one unit of change
+# Reviewing a batch unit by unit
 
-A batch PR built by [greengage-pg-batch](../greengage-pg-batch/SKILL.md) is reviewed
-unit by unit. Each unit is one commit on the batch branch, `UoC N/M: <title>`, and gets its
-own review PR once a reviewer is assigned. The batch PR stays the integration point: review
-fixes land in it by merging the review PR, and its **Review PR** column tracks them
-([greengage-uoc-review-status](../greengage-uoc-review-status/SKILL.md)).
+A batch split by [greengage-pg-batch](../greengage-pg-batch/SKILL.md) is reviewed as one pull
+request per unit of change. Each PR holds one commit on top of the upstream merge: only that
+unit's conflict resolutions, adaptations and answer files. The batch PR (`<prefix>-base` →
+`next`) is the integration point; its unit table tracks the unit PRs
+([greengage-uoc-review-status](../greengage-uoc-review-status/SKILL.md)). b1 reviewed 42 units
+this way: PRs #632–#690 into `sync-15x-b1-base`, batch PR #660, test PR #631.
 
-The tool is `${CLAUDE_PLUGIN_ROOT}/scripts/uoc_review.py`. It works entirely through the
-GitHub API with `gh api` — no checkout needed — and takes the batch PR as a number or a URL.
+The tool is `${CLAUDE_PLUGIN_ROOT}/scripts/uoc_review.py`. It works through the GitHub API with
+`gh api`, needs no checkout, and takes the batch PR as a number or a URL, or the branch prefix.
 
-## The branch layout makes the diff exactly one unit
+## Every unit PR starts from the same merge commit
 
 ```
-batch branch   … ── UoC N-1 ── UoC N ── UoC N+1 ── …          (sync-15x-b1, the batch PR head)
-                       │          │
-review PR      base: sync-15x-b1-uoc<N>-base     head: sync-15x-b1-uoc<N>  ── review fixes
+<prefix>-base   DIRTY ── (unit PRs squash-merged here, in any order) ──▶ PR into next
+                  ├── <prefix>-uoc1  UoC 1: <title>  ── review fixes
+                  ├── <prefix>-uoc2  UoC 2: <title>
+                  └── <prefix>-test  base + every uocN, merged   (CI)
 ```
 
 | Branch | Points at | Why |
 |---|---|---|
-| `<batch>-uoc<N>-base` | The commit before the unit | The PR diff starts after every earlier unit |
-| `<batch>-uoc<N>` | The unit commit; review fixes go on top | The PR diff ends at the unit, plus its fixes |
+| `<prefix>-base` | DIRTY, then the merged units | Every unit PR targets it; its diff from DIRTY is exactly one unit |
+| `<prefix>-uoc<N>` | The unit commit, review fixes on top | Built by `uoc_split.py branches`; never rebuilt once its PR is open |
+| `<prefix>-test` | Octopus merge of the base and every unit branch | The only tree that builds before all units are merged; its PR runs CI |
 
-The diff is the Greengage side of the unit: conflict resolutions — each removes the markers
-that the batch merge committed, so a hunk shows both sides and the chosen result — and the
-fixes found during bring-up. The unit's upstream commits are listed in the commit message;
-they are already reviewed upstream and are not in the diff.
+The diff of a unit PR is the Greengage side of the unit. Each conflict hunk removes the
+committed markers, so it shows both sides and the chosen result. The unit's upstream commits
+are named in its description; they are reviewed upstream and are not in the diff. The units
+change disjoint lines, so the PRs merge cleanly in any order.
 
-When the review is approved, the PR is **retargeted** to the batch branch. The merge base
-becomes the unit commit, so the diff shrinks to the review fixes, and merging it (with a
-merge commit) brings exactly those fixes into the batch PR.
-
-## Open it: dry run, confirm, then create
+## Open them: dry run, confirm, then create
 
 ```bash
 U=${CLAUDE_PLUGIN_ROOT}/scripts/uoc_review.py
-python3 $U open --pr https://github.com/GreengageDB/greengage_sync/pull/626 --uoc 7 --dry-run
-python3 $U open --pr 626 --repo GreengageDB/greengage_sync --uoc 7 --reviewer <login>
+python3 $U open --prefix sync-15x-b2 --repo GreengageDB/greengage_sync --all --dry-run
+python3 $U open --pr 700 --repo GreengageDB/greengage_sync --uoc 7 --reviewer <login>
 ```
 
-The dry run prints the unit commit, the two branches (create or reuse) and the full PR body.
-Creating branches and a PR is visible to the whole team — run the real command only when the
-user asked for it or confirmed the dry run. In b1 the team opened review PRs as reviewers
-were assigned, not all at once.
+The branches must already be on GitHub (`uoc_split.py branches --create --base`, then a push
+the user agreed to). `open` takes the PR title and body from the `UoC N:` commit — the title
+line and the unit description — and adds a `<!-- uoc-review: prefix=… uoc=N -->` marker. PRs
+are visible to the whole team: run the real command only when the user asked or confirmed
+the dry run. b1 opened all units at once; reviewers then took them one by one.
 
-`open` creates the branches through `POST /git/refs` and the PR through `POST /pulls` (the
-unit commit is already on GitHub, so nothing is pushed), then requests the reviewers. The
-PR is titled `Review <batch> UoC <N>: <title>` and its body carries the unit's review status
-and rules, the full unit commit message, the finishing steps, and a marker —
-`<!-- uoc-review: pr=626 uoc=7 commit=<sha> -->` — that the status skill finds it by.
-
-It refuses, with exit status 1, rather than doing something surprising:
-
-| Refusal | Meaning | What to do |
+| Result | Meaning | What to do |
 |---|---|---|
-| `UoC N (…) is upstream-only: its commit … is empty` | The unit's upstream changes merged cleanly or by rule; there is no Greengage diff (b1: `regex`, `ecpg`, `contrib`, `docs`, `encoding-unicode`) | Nothing to review; `--force` opens an empty PR only if the team insists |
-| `UoC N already has an open review PR` | Opened before, by the tool or by hand with the same branch names | Use that PR |
-| `branch … exists at …, which is not the unit commit or a descendant of it` | A stale branch from a rebuilt batch, or an unrelated branch | Delete it after checking nobody uses it, or open the PR by hand |
+| `UoC N already has an open PR` (exit 1; with `--all` only reported) | Opened before, by the tool or by hand | Use that PR |
+| `no branch <prefix>-uocN` (exit 2) | Not pushed, or the unit has no operations (upstream-only topics get no branch) | Push it, or there is nothing to review |
+| `no commit "UoC N: ..."` (exit 2) | The branch was not made by `uoc_split.py branches` | Open the PR by hand |
 
-Exit status 2 means the PR, the unit or `gh` itself is not usable: `no commit "UoC 99/..."`
-names a unit that does not exist on the batch head.
+Titles carry no unit total (`UoC 7:`, not `UoC 7/28:`): the number of units changes during
+review. b1's first PRs had the total and had to be closed and reopened when units were split.
 
-## Review: read the unit in the order its commit message gives
+## Review: read the unit by its description
 
-The unit commit message is the reviewer's map. Its **Review status** lines name the rule
-and the files ([review rules](../greengage-pg-batch/reference/review-rules.md)) — read those
-files first:
+The description is the reviewer's map: what upstream changed, what Greengage did and why,
+**Review focus**, the upstream commits, and the bring-up commits (`Raw-commit:`) that hold the
+reasoning. Read the Review focus files first.
 
-| Rule in the message | Look for |
+| Look for | Why |
 |---|---|
-| R1 day-1 commit | The upstream API change itself, and every Greengage caller of the old shape |
-| R3 new lines | Lines on neither side: is the invention needed, and is it MPP-correct? |
-| R4 Greengage lines dropped | A re-graft that vanished — the most common real bug of a bump |
-| R5 upstream lines dropped | An upstream fix Greengage silently refused |
-| R6/R7 changes outside the conflicts, new code | Bring-up fixes: each needs the test that proved it |
-| R8 tests weakened | A result replaced by an `ERROR`, a dropped test — never accept a regenerated failure |
+| A Greengage line that is in neither the resolution nor the merge base | A re-graft that vanished — the most common real bug of a bump |
+| An upstream line the resolution dropped | An upstream fix Greengage silently refused |
+| Lines on neither side of a conflict | An invention: is it needed, and is it MPP-correct? |
+| Code moved against both parents | Minimality is judged against Greengage before the merge and upstream, not against the markers; a needless move costs a conflict in every later batch |
+| An answer-file hunk where a result became an `ERROR` | Never accept a regenerated failure ([greengage-answer-files](../greengage-answer-files/SKILL.md)) |
+| A change that belongs to another upstream commit | It belongs in that unit; say so on the PR rather than accepting it here |
 
 For the MPP checklist — dispatch and serialization, motion and locus, distributed
-transactions, AO auxiliary relations — delegate to the `greengage-mpp-reviewer` subagent
-with the review PR's diff.
+transactions, AO auxiliary relations — delegate to the `greengage-mpp-reviewer` subagent with
+the unit PR's diff.
 
-## Fixes, then retarget and merge
+## Fixes go on the unit branch, forward only
 
-Push review fixes to `<batch>-uoc<N>`. Keep them inside the unit's files where possible: a
-fix to another unit's file is fine (units do not overlap, so it merges cleanly), but name the
-other unit in the commit message.
+- Push review fixes to `<prefix>-uoc<N>` as new commits. **Never force-push a unit branch**:
+  the test branch already contains its commits, and a rewritten commit no longer merges into it.
+- Keep a fix inside the unit's own lines. A fix that must touch lines another unit changed goes
+  to that unit's PR, or the two PRs stop merging cleanly.
+- The test branch picks the fix up by itself: `sync-uoc-test.yml` on the base merges every unit
+  branch the test branch lacks whenever a unit PR changes. Check the test PR's CI after a fix;
+  `uoc_sync_test.sh <prefix>` does the same merge by hand if the workflow is stuck.
 
-```bash
-python3 $U retarget --pr 626 --repo GreengageDB/greengage_sync --uoc 7 --dry-run
-python3 $U retarget --pr 626 --repo GreengageDB/greengage_sync --uoc 7
-```
+## Merge: squash into the base, then refresh the table
 
-`retarget` changes the review PR's base to the batch branch. It refuses (exit 1) unless the
-PR is approved and no reviewer's latest review requests changes; `--force` overrides. Then
-the team merges the review PR **with a merge commit**, and the status skill refreshes the
-batch PR's table. The `-base` branch is no longer used after the retarget; delete it when
-the PR is merged.
+b1 squash-merged every approved unit PR into the base: the base gains one commit per unit,
+`UoC N: <title> (#PR)`, whose body is the unit description — update the description first if
+the review changed what the unit does. Other unit PRs stay mergeable because the units are
+disjoint. Then run [greengage-uoc-review-status](../greengage-uoc-review-status/SKILL.md).
 
-## Without the plugin
+## Splitting a unit under review
 
-The batch PR description carries the same recipe, so anyone can do it by hand:
+When a unit turns out to hold unrelated upstream changes, split it in the batch directory
+([units-of-change.md](../greengage-pg-batch/reference/units-of-change.md), "Splitting a unit
+whose PR is already open"): the first part keeps the number, branch and PR; the other parts get
+new numbers and new PRs; the review fixes already on the branch go to the parts whose files they
+touch. b1 split seven units into three parts each (UoC 29–42).
 
-```bash
-git push origin <commit>^:refs/heads/sync-15x-b1-uoc7-base <commit>:refs/heads/sync-15x-b1-uoc7
-gh pr create -R GreengageDB/greengage_sync --base sync-15x-b1-uoc7-base --head sync-15x-b1-uoc7 \
-   --title "Review sync-15x-b1 UoC 7: <title>"
-```
+## Closing the batch
 
-A PR opened this way has no marker, but the status skill still finds it by its head branch.
+When every unit PR is merged, the base equals the test branch's tree without the workflow file
+and builds. Remove `.github/workflows/sync-uoc-test.yml` from the base, close the test PR, let CI
+run on the batch PR, and hand it to the team: it merges into `next` with a merge commit, after
+two approvals.
 
 ## What not to do
 
-- Do not open review PRs in bulk or for upstream-only units unless asked; reviewers are
-  assigned unit by unit.
-- Do not rebuild or force-push the batch branch once a review PR exists: both review
-  branches point at the old unit commit, and after a retarget the diff would show the whole
-  unit again.
-- Do not squash-merge or rebase-merge a review PR into the batch branch; the batch keeps
-  every commit's provenance.
-- Do not resolve review comments by editing the batch branch directly; the fix belongs on
-  the review PR, where the reviewer sees it.
+- Do not force-push or rebuild a unit branch whose PR is open.
+- Do not put a unit total in titles or branch names.
+- Do not fix another unit's lines in this unit's PR.
+- Do not merge the batch PR, or squash or rebase it; only the unit PRs are squash-merged.
+- Do not leave the workflow file on the base when the batch PR merges.
 
 See also: [greengage-pg-batch](../greengage-pg-batch/SKILL.md) ·
 [greengage-uoc-review-status](../greengage-uoc-review-status/SKILL.md) ·
