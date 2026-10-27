@@ -2,23 +2,24 @@
 """Prepare a batch of upstream PostgreSQL commits on greengage_sync for review.
 
 The batch flow (skill greengage-pg-batch) merges a slice of upstream history into a
-Greengage branch, brings it up on a "raw" branch, then rebuilds the branch for review:
-the batch merge first (conflict markers committed), then one commit per unit of
-change (UoC) holding that unit's conflict resolutions and fixes.
+Greengage branch with the conflict markers committed (DIRTY), brings it up to a green
+tip on a "raw" branch (RAW), then splits the Greengage side into units of change (UoC)
+that are reviewed as independent pull requests:
 
     BASE (e.g. next) --merge--> DIRTY (markers committed) --> ... --> RAW (CI green)
-    review branch:  BASE --> MERGE (tree of DIRTY) --> UoC 1 --> ... --> UoC N (tree of RAW)
+    <prefix>-base = DIRTY;  <prefix>-uocN = DIRTY + only unit N's operations
+
+This script does the steps up to the per-file first cut; uoc_split.py does the
+per-operation split and builds the unit branches.
 
 Subcommands, in the order the flow uses them:
 
     select     pick the upstream commits of the batch and check the cut for split revert pairs
     inventory  replay the merge and sort every conflict hunk into AUTO / REGEN / RESOLVE
     facts      collect per-file facts once RAW is green
-    assign     group the changed files into units of change from a topics file
-    classify   give each unit a review status: MUST REVIEW / NO REVIEW / MERGE AUTOMATICALLY
-    series     build the review branch from DIRTY and RAW
-    verify     prove the review branch reproduces RAW, unit by unit
-    render     write the pull request description
+    assign     group the changed files into units of change from a topics file (the
+               per-file owner, which uoc_split.py uses as an operation's fallback unit)
+    classify   per-file review rules R1-R8: MUST REVIEW / NO REVIEW / MERGE AUTOMATICALLY
 
 Usage:
     pg_batch.py [-C REPO] select --source next --upstream REF (--count N | --until REV | --before DATE)
@@ -27,26 +28,18 @@ Usage:
     pg_batch.py [-C REPO] facts BASE CUT DIRTY RAW --inventory inv.json --out facts.json
     pg_batch.py [-C REPO] assign facts.json topics.json --out uocs.json [--notes DIR]
     pg_batch.py [-C REPO] classify facts.json uocs.json --out tiers.json
-    pg_batch.py [-C REPO] series facts.json uocs.json tiers.json --worktree WT --branch B
-                         --out series.json [--pr-branch NAME] [--merge-message-file F]
-    pg_batch.py [-C REPO] verify facts.json series.json
-    pg_batch.py [-C REPO] render facts.json uocs.json tiers.json series.json --sections sections.md
-                         --repo OWNER/REPO --out body.md [--inventory inv.json] [--raw-branch B]
 
 REPO defaults to the current directory and must be the greengage_sync checkout.
 The git subcommands need git >= 2.38 (merge-tree --write-tree).
 
 topics.json (input of assign):
     {"topics": [{"slug": "memoize-rename", "title": "Result Cache renamed to Memoize",
-                 "summary": "one paragraph for the PR table",
                  "commits": ["83f4fcc6550"],                 # upstream commits that define the unit
                  "paths": ["src/backend/executor/nodeMemoize.c", "re:^src/test/regress/.*memoize"],
-                 "aliases": ["memoize"],                     # other UoC: trailer values meaning this unit
-                 "notes": ["adaptation bullet for the commit message"]}],
+                 "aliases": ["memoize"]}],                   # other UoC: trailer values meaning this unit
      "module_buckets": [["re:^src/backend/regex/", "regex", "Regular expressions"], ["re:.", "misc", "Other"]]}
 
-Exit status: 0 clean; 1 findings (select: the cut splits a revert pair; verify: the review
-branch does not reproduce RAW; render: the body is over GitHub's limit); 2 usage or
+Exit status: 0 clean; 1 findings (select: the cut splits a revert pair); 2 usage or
 environment error.
 """
 import argparse
@@ -61,10 +54,6 @@ import tempfile
 from collections import Counter, OrderedDict, defaultdict
 
 REPO = None
-BODY_LIMIT = 65536
-TIER_ORDER = {'MUST REVIEW': 0, 'NO REVIEW': 1, 'MERGE AUTOMATICALLY': 2}
-TIER_LABEL = {'MUST REVIEW': '🔴 must review', 'NO REVIEW': '🟢 no review',
-              'MERGE AUTOMATICALLY': '⚪ merge automatically'}
 
 
 class Refuse(Exception):
@@ -821,333 +810,11 @@ def cmd_classify(a):
     return 0
 
 
-# ------------------------------------------------------------------ series
-def ordered(U, Tr):
-    missing = [u['slug'] for u in U['uocs'] if u['slug'] not in Tr]
-    if missing:
-        raise Refuse('tiers.json has no entry for %s; re-run classify after assign' % ', '.join(missing))
-    return sorted(U['uocs'], key=lambda u: (TIER_ORDER[Tr[u['slug']]['tier']], U['uocs'].index(u)))
-
-
-def trailer_split(msg):
-    paras = msg.rstrip('\n').split('\n\n')
-    last = paras[-1].split('\n')
-    if len(paras) > 1 and all(re.match(r'^[A-Za-z][A-Za-z-]*:\s', ln) for ln in last):
-        return '\n\n'.join(paras[:-1]), last
-    return msg.rstrip('\n'), []
-
-
-def unit_message(F, u, tr, n, total, batch, primary):
-    lines = ['UoC %d/%d: %s' % (n, total, u['title']), '']
-    if u.get('summary'):
-        lines += [u['summary'], '']
-    lines += ['- ' + x for x in u.get('notes', [])] + ([''] if u.get('notes') else [])
-    lines.append('Review status: %s' % tr['tier'])
-    lines += ['  ' + r for r in tr['reasons']]
-    lines += ['', 'Upstream PostgreSQL commits (%d):' % len(u['commits'])]
-    for c in u['commits']:
-        other = primary.get(c)
-        lines.append('  %s %s%s' % (c, F['subjects'][c],
-                                    ' (main change: UoC %s)' % other if other and other != u['slug'] else ''))
-    nconf = sum(1 for p in u['files'] if F['files'][p]['conflicted'])
-    nfix = sum(1 for p in u['files'] if F['files'][p]['after_dirty'] and not F['files'][p]['conflicted'])
-    lines += ['', 'Files: %d (%d resolved conflicts, %d adapted after the merge)' % (len(u['files']), nconf, nfix),
-              '', 'UoC: %s' % u['slug'], 'Batch: %s' % batch]
-    return '\n'.join(lines) + '\n'
-
-
-def default_merge_message(F, branch, total, marked):
-    n = len(F['subjects'])
-    first = git('log', '-1', '--format=%cs', F['mbase']).strip()
-    last = git('log', '-1', '--format=%cs', F['cut']).strip()
-    return ('Merge upstream PostgreSQL %s into %s\n\n'
-            'Merges upstream PostgreSQL %s..%s (%d commits, %s .. %s).\n\n'
-            'Conflicts that a rule could settle (Greengage-deleted files, copyright\n'
-            'headers, whitespace-only sides) are resolved here.  The other %d\n'
-            'conflicted files are committed WITH conflict markers (zdiff3 style, base\n'
-            'section included), so the tree does not build at this commit.\n\n'
-            'The %d commits that follow hold the conflict resolutions and the Greengage\n'
-            'fixes found by local testing and CI, one commit per unit of change\n'
-            '("UoC N/%d"), each listing the unit\'s upstream commits and review status.\n'
-            'Units whose upstream changes merged cleanly or were resolved by rule in\n'
-            'this commit have an empty UoC commit.\n' % (
-                short(F['cut']), branch, short(F['mbase']), short(F['cut']), n, first, last,
-                marked, total, total))
-
-
-def cmd_series(a):
-    F, U, Tr = load(a.facts), load(a.uocs), load(a.tiers)
-    wt = a.worktree
-    if git_wt(wt, 'status', '--porcelain', '--untracked-files=no').strip():
-        raise Refuse('worktree %s has uncommitted changes; use a clean worktree (git worktree add)' % wt)
-    us = ordered(U, Tr)
-    total = len(us)
-    n_of = {u['slug']: i for i, u in enumerate(us, 1)}
-    primary = {}
-    for u in us:
-        for c in u.get('primary', []):
-            primary.setdefault(short(c), u['slug'])
-    f2u = {f: u['slug'] for u in us for f in u['files']}
-    alias = {u['slug']: u['slug'] for u in us}
-    for u in us:
-        for x in u.get('aliases', []):
-            alias[x] = u['slug']
-    dirty, raw = F['dirty'], F['raw']
-
-    plan = []                                   # [(raw commit, {slug: [(status, path)]})]
-    for h in git('rev-list', '--reverse', '%s..%s' % (dirty, raw)).split():
-        m = re.search(r'^UoC:\s*(\S+)', git('log', '-1', '--format=%B', h), re.M)
-        tslug = alias.get(m.group(1), m.group(1)) if m else None
-        parts = OrderedDict()
-        for st, p in name_status(h + '^', h):
-            s = f2u.get(p) or tslug
-            if s not in n_of:
-                raise Refuse('cannot place %s (bring-up commit %s, UoC trailer %s): give the commit a UoC '
-                             'trailer naming a unit, or add the path to a topic' % (p, short(h), tslug))
-            parts.setdefault(s, []).append((st, p))
-        plan.append((h, parts))
-    touch = defaultdict(list)
-    for h, parts in plan:
-        for s, fl in parts.items():
-            for _, p in fl:
-                touch[p].append(s)
-
-    marked = len(marked_files(dirty) - marked_files(F['base']))
-    name = a.pr_branch or a.branch             # the branch the PR will use; messages name it
-    msg = open(a.merge_message_file).read() if a.merge_message_file else default_merge_message(F, name, total, marked)
-    parents = git('log', '-1', '--format=%P', dirty).split()
-    an = git('log', '-1', '--format=%an%x00%ae%x00%aI', dirty).strip().split('\0')
-    env = dict(GIT_AUTHOR_NAME=an[0], GIT_AUTHOR_EMAIL=an[1], GIT_AUTHOR_DATE=an[2])
-    args = ['commit-tree', dirty + '^{tree}']
-    for p in parents:
-        args += ['-p', p]
-    merge = git(*args, '-F', '-', inp=msg, env=env).strip()
-    git_wt(wt, 'checkout', '-q', '-B', a.branch, merge)
-
-    net = defaultdict(list)                     # slug -> [(status, path)] of the net change merge -> raw
-    for st, p in name_status(merge, raw):
-        s = f2u.get(p) or (min(touch[p], key=n_of.get) if p in touch else None)
-        if s is None:
-            raise Refuse('cannot place %s (changed between the merge and RAW, in no unit)' % p)
-        net[s].append((st, p))
-
-    batch = 'upstream %s..%s' % (short(F['mbase']), short(F['cut']))
-    series = OrderedDict()
-    for u in us:
-        s = u['slug']
-        mine = [(h, parts) for h, parts in plan if s in parts]
-        body, trailers = trailer_split(unit_message(F, u, Tr[s], n_of[s], total, batch, primary))
-        fl = net.get(s, [])
-        if mine:
-            subj = ['  %s %s%s' % (short(h), git('log', '-1', '--format=%s', h).strip(),
-                                   ' [%s part]' % s if len(parts) > 1 else '') for h, parts in mine]
-            body += ('\n\nThe upstream commits are in the batch merge.  This commit holds the Greengage changes of '
-                     'this unit: the conflict resolutions and fixes of its files (%d), squashed from %d bring-up '
-                     'commit%s:\n%s' % (len(fl), len(mine), '' if len(mine) == 1 else 's', '\n'.join(subj)))
-        else:
-            body += ('\n\nNo Greengage changes: the upstream commits of this unit merged cleanly or were resolved '
-                     'by rule in the batch merge, so this commit only records the unit.')
-        trailers = trailers + ['Raw-commit: %s' % short(h) for h, _ in mine]
-        keep = [p for st, p in fl if st != 'D']
-        dele = [p for st, p in fl if st == 'D']
-        for i in range(0, len(keep), 200):
-            git_wt(wt, 'checkout', raw, '--', *keep[i:i + 200])
-        for i in range(0, len(dele), 200):
-            git_wt(wt, 'rm', '-q', '--', *dele[i:i + 200])
-        git_wt(wt, '-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--allow-empty', '-F', '-',
-               inp=body + '\n\n' + '\n'.join(trailers) + '\n')
-        series[s] = dict(n=n_of[s], commit=git_wt(wt, 'rev-parse', 'HEAD').strip(),
-                         raw=[short(h) for h, _ in mine], files=[p for _, p in fl])
-    tip = git_wt(wt, 'rev-parse', 'HEAD').strip()
-    if git('diff', '--stat', raw, tip).strip():
-        raise Refuse('the rebuilt branch does not reproduce RAW (git diff %s %s); nothing was pushed' % (short(raw), short(tip)))
-    dump(dict(branch=name, build_branch=a.branch, merge=merge, tip=tip, marked_in_merge=marked, units=series), a.out)
-    print('%s: merge %s + %d unit commits (%d empty), %d files from %d bring-up commits (%d split across units); '
-          'tip %s, tree == RAW' % (a.branch, short(merge), total, sum(1 for v in series.values() if not v['files']),
-                                  sum(len(v['files']) for v in series.values()), len(plan),
-                                  sum(1 for _, p in plan if len(p) > 1), short(tip)))
-    return 0
-
-
-# ------------------------------------------------------------------ verify
-def cmd_verify(a):
-    F, S = load(a.facts), load(a.series)
-    dirty, raw, merge = F['dirty'], F['raw'], S['merge']
-    errs = []
-    if git('rev-parse', merge + '^{tree}') != git('rev-parse', dirty + '^{tree}'):
-        errs.append('the merge commit tree differs from DIRTY')
-    if git('log', '-1', '--format=%P', merge) != git('log', '-1', '--format=%P', dirty):
-        errs.append('the merge commit parents differ from DIRTY')
-
-    def bl(c, p):
-        return git('rev-parse', '--verify', '--quiet', '%s:%s' % (c, p), ok=(0, 1)).strip() or None
-
-    want = set(p for _, p in name_status(merge, raw))
-    seen, prev, raw_listed = {}, merge, set()
-    raw_all = set(short(h) for h in git('rev-list', '%s..%s' % (dirty, raw)).split())
-    for s, v in sorted(S['units'].items(), key=lambda kv: kv[1]['n']):
-        c = v['commit']
-        if git('log', '-1', '--format=%P', c).split() != [prev]:
-            errs.append('UoC %d (%s) is not a child of the previous commit' % (v['n'], s))
-        ch = set(p for _, p in name_status(prev, c))
-        if ch != set(v['files']):
-            errs.append('UoC %d (%s) changes %d files, series.json lists %d' % (v['n'], s, len(ch), len(v['files'])))
-        for p in ch:
-            if bl(c, p) != bl(raw, p):
-                errs.append('UoC %d (%s): %s differs from RAW' % (v['n'], s, p))
-            if p in seen:
-                errs.append('%s is changed by UoC %s and UoC %s' % (p, seen[p], s))
-            seen[p] = s
-        tr = re.findall(r'^Raw-commit:\s*(\S+)', git('log', '-1', '--format=%B', c), re.M)
-        if tr != v['raw']:
-            errs.append('UoC %d (%s): Raw-commit trailers %s, expected %s' % (v['n'], s, tr, v['raw']))
-        if not ch and v['raw']:
-            errs.append('UoC %d (%s) squashes bring-up commits but changes nothing' % (v['n'], s))
-        raw_listed.update(tr)
-        prev = c
-    if set(seen) != want:
-        errs.append('%d files change between the merge and RAW, the units cover %d' % (len(want), len(seen)))
-    if raw_listed != raw_all:
-        errs.append('bring-up commits not listed in any unit: %s' % ' '.join(sorted(raw_all - raw_listed)))
-    if git('rev-parse', prev + '^{tree}') != git('rev-parse', raw + '^{tree}'):
-        errs.append('the tip tree differs from RAW')
-    for e in errs:
-        print('MISMATCH ' + e)
-    print('merge %s, %d units, %d files, %d bring-up commits: %s' % (
-        short(merge), len(S['units']), len(seen), len(raw_listed), 'review branch == RAW' if not errs else '%d mismatches' % len(errs)))
-    return 1 if errs else 0
-
-
-# ------------------------------------------------------------------ render
-def sections(path):
-    out, cur = OrderedDict(), None
-    with open(path) as f:
-        for ln in f:
-            m = re.match(r'<!-- section: (\w+) -->', ln)
-            if m:
-                cur = m.group(1)
-                out[cur] = ''
-            elif cur:
-                out[cur] += ln
-    return {k: v.strip() + '\n' for k, v in out.items() if v.strip()}
-
-
-def cmd_render(a):
-    F, U, Tr, S = load(a.facts), load(a.uocs), load(a.tiers), load(a.series)
-    sec = sections(a.sections)
-    missing = [k for k in ('intro', 'adaptations', 'validation') if k not in sec]
-    if missing:
-        raise Refuse('%s has no %s section; start from the skeleton in the skill reference pr-template.md'
-                     % (a.sections, ', '.join(missing)))
-    inv = load(a.inventory) if a.inventory else None
-    us = ordered(U, Tr)
-    cnt = Counter(Tr[u['slug']]['tier'] for u in us)
-    br, raw_br, total = S['branch'], a.raw_branch or S['branch'] + '-raw', len(us)
-    empty = [u['title'] for u in us if not S['units'][u['slug']]['files']]
-    m = re.match(r'sync-(\d+)x-b(\d+)$', br)
-    title = a.title or ('Sync %s: merge upstream PostgreSQL %s..%s (%s%d units of change)' % (
-        br.replace('sync-', '').replace('-', ' '), short(F['mbase']), short(F['cut']),
-        'PG%s batch %s, ' % m.groups() if m else '', total))
-    rows = []
-    for n, u in enumerate(us, 1):
-        t, cs = Tr[u['slug']], u['commits']
-        pc = ' '.join(cs) if len(cs) <= a.max_inline else '%s … <br>(%d total, full list in the UoC commit)' % (
-            ' '.join(cs[:a.max_inline]), len(cs))
-        why = '<br><sub>%s</sub>' % '; '.join(t['rules']) if t['rules'] else ''
-        tag = '' if S['units'][u['slug']]['files'] else '<br><sub>(upstream only, empty commit)</sub>'
-        rows.append('| %d | **%s**<br>%s%s | %s | %s | %s%s | — |' % (
-            n, u['title'].replace('|', '\\|'), short(S['units'][u['slug']]['commit']), tag,
-            (u.get('summary') or '').replace('|', '\\|').replace('\n', ' '), pc or '—', TIER_LABEL[t['tier']], why))
-
-    stats = ''
-    if inv:
-        c = Counter(f['tier'] for f in inv['files'])
-        hunks = sum(1 for f in inv['files'] for h in f.get('hunks', []) if h['tier'] == 'RESOLVE')
-        regen = sum(1 for f in inv['files'] if f['tier'] == 'REGEN')
-        stats = ('\nMerge statistics: %d conflicted files.\n- %d resolved by rule in the merge commit.\n'
-                 '- %d resolved by hand (%d content hunks), %d of them committed with markers.\n'
-                 '- %d generated or expected-output files regenerated rather than merged.\n' % (
-                     len(inv['files']), c['AUTO'], len(inv['files']) - c['AUTO'], hunks, S['marked_in_merge'], regen))
-    org = ('**How this PR is organised.** The history starts with the real merge of the upstream batch, followed by '
-           'one commit per **unit of change (UoC)**:\n'
-           '- `Merge upstream PostgreSQL %s into %s` brings in the %d upstream commits. Conflicts that a rule could '
-           'settle are resolved in it. The other %d conflicted files are committed with their conflict markers (zdiff3, '
-           'base section included), so the merge commit itself does not build.\n'
-           '- Each UoC is then one commit, `UoC N/%d: <title>`. Its diff holds the unit\'s conflict resolutions (each '
-           'removes the committed markers, so it shows both sides and the chosen result) and the adaptations and fixes '
-           'found by local testing and CI. Its message holds the summary, the review recommendation with the rules and '
-           'files that triggered it, the full list of the unit\'s upstream commits, and the bring-up commits it squashes.\n'
-           % (short(F['cut']), br, len(F['subjects']), S['marked_in_merge'], total))
-    if empty:
-        org += ('- Units whose upstream changes merged cleanly or were settled by rule inside the merge (%s) have no '
-                'Greengage changes. Their UoC commit is empty and only records the unit.\n' % ', '.join(empty))
-    org += ('\nThe individual bring-up commits are kept on `%s` in their original order. Each UoC commit names the ones '
-            'it squashes in `Raw-commit:` trailers; a bring-up commit that touched several units is listed in each. The '
-            'commits before the tip do not build on their own; CI validates the tip. Merge this PR with a merge commit '
-            '(not squash or rebase) so the upstream ancestry is kept.\n' % raw_br)
-
-    body = [sec['intro'], org + stats, '## Units of change\n',
-            '%d units: %d must review, %d no review, %d merge automatically. The first commit on this branch, %s, is '
-            'the merge of the upstream batch. Each unit is then one commit (the short hash after the title).%s The '
-            '**Review PR** column is kept up to date from the review PRs themselves.\n' % (
-                total, cnt['MUST REVIEW'], cnt['NO REVIEW'], cnt['MERGE AUTOMATICALLY'], short(S['merge']),
-                ' The %d units marked "upstream only" have no Greengage changes; their commits are empty.' % len(empty)
-                if empty else ''),
-            '| # | Unit of change | Summary | PostgreSQL commits | Review | Review PR |',
-            '|---|---|---|---|---|---|'] + rows + ['']
-    if U.get('unlisted_commits'):
-        body += ['<details><summary>%d upstream commits that change only files Greengage removed (docs, translations, '
-                 '...)</summary>\n' % len(U['unlisted_commits']), ' '.join(U['unlisted_commits']), '\n</details>\n']
-    body.append(
-        '### Review status\n\n'
-        'The recommendation applies the rules from the b14–b17 review triage (review threads and defect outcomes of '
-        '607 PRs). The thresholds were fitted per PR, so they are evaluated **per file** inside each UoC; the '
-        'triggering files are listed in each UoC commit.\n\n'
-        '| Status | Meaning | Rules |\n|---|---|---|\n'
-        '| 🔴 **must review** | A reviewer should read it, and run the affected tests where possible. All high and '
-        'medium review findings of b14–b17 were in this class. | **R1** an upstream "day-1" commit (largest overlap '
-        'with Greengage-heavy code) touches a Greengage-heavy file · **R2** upstream deleted or moved a file Greengage '
-        'modifies · **R3/R4/R5** ≥3 new / Greengage-dropped / upstream-dropped lines in a conflict resolution · '
-        '**R6/R7** ≥6 changed code lines outside the conflicts, or new code added during bring-up · **R8** expected '
-        'output gains errors, or tests are dropped |\n'
-        '| 🟢 **no review** | Small resolutions, build fixes and clean upstream changes in Greengage-modified files. '
-        'Gated by CI. | none of the above |\n'
-        '| ⚪ **merge automatically** | Clean upstream changes in files Greengage never modified, rule-based '
-        'resolutions, generated/regenerated files. | none of the above |\n')
-    body.append(
-        '### Review PRs\n\n'
-        'Review PRs are opened per unit as reviewers are assigned, and the fixes they produce are merged into this PR. '
-        'A review PR for UoC *N* has base `%s-uoc<N>-base` (the commit before the unit) and head `%s-uoc<N>` (the unit '
-        'commit), so its diff is exactly that unit. With the gg-agent plugin, `uoc_review.py open --pr <this PR> --uoc '
-        '<N>` creates both branches and the PR; by hand, with `<commit>` the hash after the unit\'s title:\n\n'
-        '```sh\n'
-        'git push origin <commit>^:refs/heads/%s-uoc<N>-base <commit>:refs/heads/%s-uoc<N>\n'
-        'gh pr create -R %s --base %s-uoc<N>-base --head %s-uoc<N> --title "Review %s UoC <N>: <title>"\n'
-        '```\n\n'
-        'The upstream commits are only listed in the unit commit; they are already reviewed upstream. Push review fixes '
-        'to the head branch. When the review is done, retarget the review PR\'s base to `%s`: its diff becomes only the '
-        'fixes, which are merged into this branch with a merge commit. Upstream-only units (empty commits) need no '
-        'review PR.\n' % (br, br, br, br, a.repo, br, br, br, br))
-    for k in ('adaptations', 'validation', 'followups'):
-        if k in sec:
-            body.append(sec[k])
-    text = '\n'.join(body)
-    with open(a.out, 'w') as f:
-        f.write(text)
-    print('title: %s' % title)
-    print('%s: %d chars, %d unit rows' % (a.out, len(text), len(rows)))
-    if len(text) >= BODY_LIMIT:
-        print('the body is over GitHub\'s %d-character limit: lower --max-inline (now %d) or shorten the sections'
-              % (BODY_LIMIT, a.max_inline))
-        return 1
-    return 0
-
-
 # ------------------------------------------------------------------ main
 def main(argv=None):
     global REPO
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
-                                 epilog='See the module docstring (head -60 %s) for the flow.' % os.path.basename(__file__),
+                                 epilog='See the module docstring (head -45 %s) for the flow.' % os.path.basename(__file__),
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('-C', dest='gitdir', help='greengage_sync checkout (default: current directory)')
     sp = ap.add_subparsers(dest='cmd', metavar='SUBCOMMAND')
@@ -1180,28 +847,6 @@ def main(argv=None):
     p.add_argument('facts')
     p.add_argument('uocs')
     p.add_argument('--out', required=True)
-    p = sp.add_parser('series', help='build the review branch')
-    for x in ('facts', 'uocs', 'tiers'):
-        p.add_argument(x)
-    p.add_argument('--worktree', required=True, help='a clean worktree of the repository to build in')
-    p.add_argument('--branch', required=True, help='local branch to build on (created or reset in WT)')
-    p.add_argument('--pr-branch', help='branch name the PR uses, for the messages (default: --branch); '
-                   'build on a temporary --branch when the PR branch is checked out elsewhere')
-    p.add_argument('--out', required=True)
-    p.add_argument('--merge-message-file')
-    p = sp.add_parser('verify', help='prove the review branch reproduces RAW')
-    p.add_argument('facts')
-    p.add_argument('series')
-    p = sp.add_parser('render', help='write the pull request description')
-    for x in ('facts', 'uocs', 'tiers', 'series'):
-        p.add_argument(x)
-    p.add_argument('--sections', required=True, help='hand-written sections (skeleton: reference/pr-template.md)')
-    p.add_argument('--repo', required=True, help='OWNER/REPO of the pull request, e.g. GreengageDB/greengage_sync')
-    p.add_argument('--inventory', help='inventory JSON, for the merge statistics')
-    p.add_argument('--raw-branch', help='branch that keeps the bring-up history (default: <branch>-raw)')
-    p.add_argument('--title')
-    p.add_argument('--max-inline', type=int, default=12, help='upstream commits listed per row before truncating')
-    p.add_argument('--out', required=True)
     a = ap.parse_args(argv)
     if not a.cmd:
         ap.print_help()
@@ -1212,7 +857,7 @@ def main(argv=None):
                           capture_output=True).returncode:
             raise Refuse('%s is not a git repository; run from the greengage_sync checkout or pass -C' % (REPO or '.'))
         return {'select': cmd_select, 'inventory': cmd_inventory, 'facts': cmd_facts, 'assign': cmd_assign,
-                'classify': cmd_classify, 'series': cmd_series, 'verify': cmd_verify, 'render': cmd_render}[a.cmd](a)
+                'classify': cmd_classify}[a.cmd](a)
     except Refuse as e:
         print('pg_batch.py %s: %s' % (a.cmd, e), file=sys.stderr)
         return 2

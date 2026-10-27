@@ -341,9 +341,10 @@ exist and `parallel_schedule` opens with `tablespace`. Drop it from `TESTS` ther
    lines the raw result carries, but this tree keeps them: 353 of the 765 `.out`
    files under `src/test/regress/expected/` contain the `Table doesn't have 'DISTRIBUTED BY'
    clause` NOTICE and 39 contain `Distributed by: (…)`, both of which `init_file`
-   matchignores. Stripping them makes your file inconsistent with the other 352 and
-   adds churn a reviewer has to read. Copy the file byte-for-byte, trailing
-   whitespace included.
+   matchignores. Stripping existing lines makes your file inconsistent with the other 352
+   and adds churn. To shrink a regeneration's diff instead, run `gpdiff_min.py`: it puts
+   back every hunk gpdiff does not need and strips only lines the change adds
+   ([reference/minimizing-regenerated-files.md](reference/minimizing-regenerated-files.md)).
 6. Re-run the test and confirm `ok    ` and no `regression.diffs`. If the file is a
    shared base, confirm under `optimizer=on` **and** `optimizer=off`.
 7. Commit answer-file regenerations as isolated, clearly labelled commits. The

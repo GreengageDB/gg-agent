@@ -1,7 +1,9 @@
 # Review rules R1–R8
 
 Lookup material for [greengage-pg-batch](../SKILL.md). `pg_batch.py classify` implements
-these rules; the PR legend that `render` writes summarises them.
+these rules over the per-file cut. In the per-operation flow they are an optional hint for
+where reviewers should look first: do not copy their flags or tiers into unit descriptions.
+In b1 they misfired there, and the re-split dropped them.
 
 ## Where the rules come from
 

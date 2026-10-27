@@ -62,9 +62,9 @@ Written for **Greengage 7.x** (PostgreSQL 12.22, *coordinator* terminology), wit
 | [greengage-ci](skills/greengage-ci/SKILL.md) | A CI run is red — fetching artifacts and classifying each failure as cosmetic, real, or flaky |
 | [greengage-contribute](skills/greengage-contribute/SKILL.md) | Preparing a pull request — which branch to target, the CLA, formatting rules, and the review process |
 | [greengage-pg-merge](skills/greengage-pg-merge/SKILL.md) | Merging an upstream PostgreSQL major version into the fork — conflict clustering, semantic re-grafting, the phased bring-up, and the traps that recur every bump |
-| [greengage-pg-batch](skills/greengage-pg-batch/SKILL.md) | Preparing a batch of upstream PostgreSQL commits for team review — picking the cut, the merge with committed markers, units of change, review tiers, the review-layout branch and the templated PR description |
-| [greengage-uoc-review-pr](skills/greengage-uoc-review-pr/SKILL.md) | Opening the review PR for one unit of change of a batch PR, and retargeting it into the batch once approved |
-| [greengage-uoc-review-status](skills/greengage-uoc-review-status/SKILL.md) | Refreshing the batch PR's Review PR column from the state of every unit's review PRs |
+| [greengage-pg-batch](skills/greengage-pg-batch/SKILL.md) | Preparing a batch of upstream PostgreSQL commits for team review — picking the cut, the merge with committed markers, units of change split per operation, the independence and completeness checks, one branch and PR per unit, and the batch PR description |
+| [greengage-uoc-review-pr](skills/greengage-uoc-review-pr/SKILL.md) | Opening the PRs of a batch's units of change, reviewing and fixing a unit, the CI test branch, merging into the batch base |
+| [greengage-uoc-review-status](skills/greengage-uoc-review-status/SKILL.md) | Refreshing the batch PR's unit table from the state of every unit PR |
 
 ## Commands
 
