@@ -49,3 +49,22 @@ lines you added. Rerun the test afterwards either way.
 | The product name in atmsort.pm's referential-integrity rule differs by branch (`Greenplum Database` on greengage_sync, `Greengage Database` on 6.x/7.x) | The script matches both; a hand-written copy of the rule matching one silently keeps the other |
 | A `matchsubs` that rewrites rather than deletes | Not applied: only `s/X//` rules are, so a masked value stays in the file as written |
 | Running it over a file another change regenerated wholesale | Every gpdiff-ignored line in the file goes, existing ones included: churn for the reviewer |
+
+## Rowcounts: masked for direct EXPLAIN, literal for SETOF-function tables
+
+atmsort prefixes the `(N rows)` line of a **direct** `EXPLAIN (… COSTS OFF)` statement with
+`GP_IGNORE:` (`atmsort.pm:1149-1157`; the directive comes from the statement text itself,
+`atmsort.pm:1201`), so those counts are never compared — putting the base count back with
+its hunk costs nothing. A result table produced by a **SETOF-returning function**
+(`SELECT explain_merge('…')` in `merge.out`) does not get the directive: its count is
+compared literally, and `gpdiff_min.py` keeps the live value there by construction —
+reverting that hunk to base would make gpdiff see a difference, so the hunk stays with the
+count as the run produced it.
+
+Do not hand-restore those counts to base afterwards. Measured on PR #735: a direct-EXPLAIN
+`(9 rows)` against a live `(10 rows)` passes, while `(15 rows)` against live `(14 rows)`
+and `(12 rows)` both fail — same belief in the mask, different verdict, the difference is
+which statement produced the table. A count that differs from the base is honest output
+when the table's body differs too (extra plan lines, rows split across segments); it is
+free to align only when the whole block matches the base byte for byte and the hunk
+disappears entirely.

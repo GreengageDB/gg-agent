@@ -374,6 +374,35 @@ and `@aoseg@`. Audit for misplaced templates:
 git ls-files '*.source' | grep -vE '/(input|output|yml_in)/'   # only src/tutorial should match
 ```
 
+## A sync-unit branch cannot run the suite — verify one test through `--use-existing`
+
+A unit-of-change branch carries other units' unresolved regions by design: `GNUmakefile`,
+`test_setup.*`, `with.*`, whole regions of shared expected files. `make installcheck` dies
+on the markers, and swapping the conflicted files for the run quietly verifies someone
+else's resolution. One test still runs:
+
+```sh
+cd src/test/regress
+psql -d template1 -c "GRANT ALL ON SCHEMA public TO public"   # PG15 locks public; test_setup,
+                                                              # whose own GRANT the run relies
+                                                              # on, is not runnable on the branch
+psql -d postgres -c "CREATE DATABASE verify_uoc"
+./pg_regress --use-existing --dbname=verify_uoc --inputdir=. --dlpath=. \
+  --max-concurrent-tests=20 --make-testtablespace-dir --init-file=./init_file \
+  --bindir="$GPHOME/bin" --load-extension=gp_inject_fault <test>
+psql -d template1 -c "REVOKE ALL ON SCHEMA public FROM public"
+psql -d postgres -c "DROP DATABASE verify_uoc"
+```
+
+`--use-existing` skips database creation, so create the database first — from the granted
+template1, or the grant never lands — and `DROP ROLE IF EXISTS` the roles the test
+declares (leftovers from a crashed run surface as `role … already exists` and mask the
+real diff). `test_setup` itself cannot run on the branch; failures in other units'
+regions (`rls_view` in rowsecurity, the wCTE region of with, statement-trigger blocks in
+triggers) belong to the units that resolve them — judge only the target test's hunks,
+and count the hunks before and after your change. The full-suite run happens on the
+assembled test branch.
+
 ## What not to do
 
 - Do not run `make -C src/test/regress check`, or edit `src/test/regress/Makefile`.
