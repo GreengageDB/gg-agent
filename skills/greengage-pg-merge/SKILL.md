@@ -147,6 +147,24 @@ add to the older one. A guard for a new MPP invariant whose failure would corrup
 `elog(ERROR)`, not `Assert`: a release build must refuse, not proceed. Worked examples of
 each row: [reference/merge-conventions.md](reference/merge-conventions.md).
 
+## Pull nothing from after the pin
+
+The batch range is `[cut, pin]`. A unit that carries a commit from **after** the pin buys
+three costs for no benefit the next sync will not deliver for free:
+
+| Cost | Seen in practice |
+|---|---|
+| The PR diff carries changes reviewers cannot attribute to the range | PR #735 pulled three post-pin MERGE follow-ups (`c922f924d34`, `72abf03b649`, `f80919df950`); only one of them (`c922f924d34`, autovacuum off in `merge.sql`) changed test outcomes at all |
+| Every later batch must dedup them (by patch id or by eye), or the merge re-applies the change onto the unit's own adaptation and conflicts against itself | The follow-up hunks sat inside `merge.sql`/`with.out` adaptations; the next sync re-resolves exactly that collision |
+| A later revert-and-readd cycle touches the same adapted files twice | The follow-ups had to be reverted out of the unit before review — the same hunks reviewed twice, and re-reviewed once the next merge lands them |
+
+Take a post-pin commit only when a test fails without it and the fix sits in the same files
+the unit already owns (`455d254d226`, reject MERGE in CTE/COPY, stayed for that reason: the
+unit's own `merge.sql` blocks assert its rejections). When in doubt, leave it out — the next
+sync's merge delivers it, and the batch's job is the range, not the backlog. A unit that
+carries extra range says so in its commit message and lists the post-pin commits
+explicitly, so the next batch knows to skip them.
+
 ## Look past the target before you resolve a cluster
 
 The pinned target is a snapshot of upstream development, usually the feature freeze.

@@ -345,6 +345,10 @@ exist and `parallel_schedule` opens with `tablespace`. Drop it from `TESTS` ther
    and adds churn. To shrink a regeneration's diff instead, run `gpdiff_min.py`: it puts
    back every hunk gpdiff does not need and strips only lines the change adds
    ([reference/minimizing-regenerated-files.md](reference/minimizing-regenerated-files.md)).
+   Rowcounts have one asymmetry worth knowing before hand-tuning them: they are
+   masked for direct `EXPLAIN (… COSTS OFF)` statements and compared literally for
+   tables produced by SETOF-returning functions — same
+   [reference](reference/minimizing-regenerated-files.md), last section.
 6. Re-run the test and confirm `ok    ` and no `regression.diffs`. If the file is a
    shared base, confirm under `optimizer=on` **and** `optimizer=off`.
 7. Commit answer-file regenerations as isolated, clearly labelled commits. The
